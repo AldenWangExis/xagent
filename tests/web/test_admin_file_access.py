@@ -3,6 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 import pytest
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from xagent.web.api.auth import hash_password
 from xagent.web.api.files import file_router
+from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from xagent.web.models.database import Base, get_db
 from xagent.web.models.task import Task
 from xagent.web.models.user import User
@@ -34,11 +36,13 @@ def test_db():
 
     # Create override function that uses this test's session
     def override_get_db():
+        db = None
         try:
             db = TestingSessionLocal()
             yield db
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
     # Create test app for this test
     test_app = FastAPI()
@@ -88,7 +92,10 @@ def temp_uploads_dir(monkeypatch):
 
         # Also patch get_upload_path
         def patched_get_upload_path(
-            filename: str, task_id: str = None, folder: str = None, user_id: int = None
+            filename: str,
+            task_id: Optional[str] = None,
+            folder: Optional[str] = None,
+            user_id: Optional[int] = None,
         ):
             if user_id:
                 user_dir = temp_path / f"user_{user_id}"
@@ -111,13 +118,12 @@ def create_auth_headers(user):
 
     payload = {
         "sub": user.username,
+        "type": "access",
         "exp": datetime.utcnow() + timedelta(hours=1),
         "iat": datetime.utcnow(),
         "user_id": user.id,
     }
-    token = jwt.encode(
-        payload, "your-secret-key-change-in-production", algorithm="HS256"
-    )
+    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return {"Authorization": f"Bearer {token}"}
 
 

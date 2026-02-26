@@ -15,6 +15,7 @@ from xagent.core.memory.base import MemoryStore
 from xagent.core.memory.core import MemoryNote
 from xagent.web.api.auth import auth_router, hash_password
 from xagent.web.api.memory import MemoryManagementRouter
+from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from xagent.web.models.database import Base, get_db
 from xagent.web.models.user import User
 
@@ -29,11 +30,13 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 
 def override_get_db():
+    db = None
     try:
         db = TestingSessionLocal()
         yield db
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 @pytest.fixture(scope="function")
@@ -76,13 +79,12 @@ def auth_headers(test_db):
 
     payload = {
         "sub": "admin",
+        "type": "access",
         "exp": datetime.utcnow() + timedelta(hours=1),
         "iat": datetime.utcnow(),
         "user_id": test_db.id,  # Use actual user ID from test_db fixture
     }
-    token = jwt.encode(
-        payload, "your-secret-key-change-in-production", algorithm="HS256"
-    )
+    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return {"Authorization": f"Bearer {token}"}
 
 
