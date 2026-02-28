@@ -6,8 +6,17 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
-import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select } from "@/components/ui/select"
 import { MultiSelect } from "@/components/ui/multi-select"
@@ -36,10 +45,13 @@ import {
   Settings,
   CheckCircle2,
   Loader2,
-  Search
+  Search,
+  RefreshCw,
+  X
 } from "lucide-react"
 import { useI18n } from "@/contexts/i18n-context"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { toast } from "sonner"
 
 function doubleEncodeModelId(modelId: string): string {
   return encodeURIComponent(encodeURIComponent(modelId))
@@ -135,7 +147,6 @@ export function ModelsPage() {
   const { t, locale } = useI18n()
   const [models, setModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingModel, setEditingModel] = useState<Model | null>(null)
   const [activeTab, setActiveTab] = useState("llm")
@@ -150,7 +161,10 @@ export function ModelsPage() {
   const [fetchedModels, setFetchedModels] = useState<ProviderModel[]>([])
   const [selectedFetchedModels, setSelectedFetchedModels] = useState<string[]>([])
   const [isFetchingModels, setIsFetchingModels] = useState(false)
-  const [fetchModelsError, setFetchModelsError] = useState<string | null>(null)
+  const [showDefaultConfirm, setShowDefaultConfirm] = useState(false)
+  const [pendingDefaultType, setPendingDefaultType] = useState<string | null>(null)
+  const [pendingModels, setPendingModels] = useState<string[]>([])
+  const [selectedDefaultModel, setSelectedDefaultModel] = useState<string>("")
 
   // Default models state
   const [defaultModels, setDefaultModels] = useState<{
@@ -258,11 +272,14 @@ export function ModelsPage() {
         headers: {}
       })
 
-      if (!response.ok) throw new Error("Failed to fetch models")
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || t('models.errors.fetchFailed'))
+      }
       const data = await response.json()
       setModels(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error")
+      toast.error(err instanceof Error ? err.message : t('models.errors.fetchFailed'))
     } finally {
       setLoading(false)
     }
@@ -295,30 +312,42 @@ export function ModelsPage() {
   }, [filteredModels])
 
   // Handlers from models-1.tsx
-  const handleSubmit = async () => {
+  const submitModelData = async (data: ModelCreate, defaultTypeToSet?: string, defaultModelId?: string) => {
     try {
       const payloads: ModelCreate[] = []
 
-      if (!editingModel && formData.model_names && formData.model_names.length > 0) {
+      if (!editingModel && data.model_names && data.model_names.length > 0) {
         // Batch create mode
-        formData.model_names.forEach(name => {
-           const payload = { ...formData, model_name: name }
-           // Remove array field from payload to match backend expectation
-           const { model_names, ...rest } = payload as any
-           if (!rest.model_id) {
-             rest.model_id = `${name}-${rest.model_provider}`
-           }
-           payloads.push(rest)
+        data.model_names.forEach(name => {
+          const payload = { ...data, model_name: name }
+          // Remove array field from payload to match backend expectation
+          const { model_names, ...rest } = payload as any
+          if (!rest.model_id) {
+            rest.model_id = `${name}-${rest.model_provider}-${user?.id}`
+          }
+
+          // Handle default type for specific model in batch
+          if (defaultTypeToSet && defaultModelId && name === defaultModelId) {
+            rest.default_config_types = [...(rest.default_config_types || []), defaultTypeToSet]
+          }
+
+          payloads.push(rest)
         })
       } else {
         // Single create/edit mode
-        const payload = { ...formData }
+        const payload = { ...data }
         // Remove array field
         const { model_names, ...rest } = payload as any
 
         if (!editingModel && !rest.model_id && rest.model_name && rest.model_provider) {
-           rest.model_id = `${rest.model_name}-${rest.model_provider}`
+          rest.model_id = `${rest.model_name}-${rest.model_provider}-${user?.id}`
         }
+
+        // Handle default type for single model
+        if (defaultTypeToSet) {
+          rest.default_config_types = [...(rest.default_config_types || []), defaultTypeToSet]
+        }
+
         payloads.push(rest)
       }
 
@@ -337,7 +366,7 @@ export function ModelsPage() {
 
         if (!response.ok) {
           const errorData = await response.json()
-          throw new Error(errorData.detail || `Failed to save model ${payload.model_name}`)
+          throw new Error(errorData.detail || t('models.errors.saveFailed'))
         }
 
         // Handle default configurations
@@ -345,7 +374,7 @@ export function ModelsPage() {
         const modelId = modelResponse.id
 
         const currentDefaults = editingModel ? getModelDefaultTypes(editingModel.id) : []
-        const newDefaults = formData.default_config_types || []
+        const newDefaults = payload.default_config_types || []
 
         for (const configType of currentDefaults) {
           if (!newDefaults.includes(configType)) {
@@ -382,10 +411,82 @@ export function ModelsPage() {
         closeDialog()
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error")
+      toast.error(err instanceof Error ? err.message : t('models.errors.saveFailed'))
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleSubmit = async () => {
+    // Check for default model
+    if (!editingModel) {
+      // Only check for general (LLM) default model
+      const targetType = formData.category === 'llm' ? 'general' : null
+
+      // Check if default exists
+      const hasDefault = targetType && (defaultModels as any)[targetType]
+
+      // Check if user already selected this type in the form
+      const userAlreadySelected = targetType && formData.default_config_types?.includes(targetType)
+
+      if (targetType && !hasDefault && !userAlreadySelected) {
+        setPendingDefaultType(targetType)
+        setPendingModels(formData.model_names && formData.model_names.length > 0 ? formData.model_names : [formData.model_name])
+        setSelectedDefaultModel(formData.model_names && formData.model_names.length > 0 ? formData.model_names[0] : formData.model_name)
+        setShowDefaultConfirm(true)
+        return
+      }
+    }
+
+    await submitModelData(formData)
+  }
+
+  const handleConfirmDefault = async () => {
+    setShowDefaultConfirm(false)
+    if (viewMode === 'connect') {
+      const selected = fetchedModels.filter(m => selectedFetchedModels.includes(m.id))
+      // If user selected a specific model to be default
+      await submitSelectedModels(selected, pendingDefaultType || undefined, selectedDefaultModel)
+    } else {
+      if (pendingDefaultType) {
+        // Handle batch create with selected default
+        if (formData.model_names && formData.model_names.length > 0) {
+           await submitModelData(formData, pendingDefaultType || undefined, selectedDefaultModel)
+        } else {
+           // Single create
+           const newData = {
+             ...formData,
+             default_config_types: [...(formData.default_config_types || []), pendingDefaultType]
+           }
+           await submitModelData(newData)
+        }
+      } else {
+        await submitModelData(formData)
+      }
+    }
+    setPendingDefaultType(null)
+    setPendingModels([])
+    setSelectedDefaultModel("")
+  }
+
+  const handleCancelDefault = async () => {
+    setShowDefaultConfirm(false)
+    if (viewMode === 'connect') {
+      const selected = fetchedModels.filter(m => selectedFetchedModels.includes(m.id))
+      await submitSelectedModels(selected)
+    } else {
+      await submitModelData(formData)
+    }
+    setPendingDefaultType(null)
+    setPendingModels([])
+    setSelectedDefaultModel("")
+  }
+
+  const handleCloseDefaultConfirm = () => {
+    setShowDefaultConfirm(false)
+    setPendingDefaultType(null)
+    setPendingModels([])
+    setSelectedDefaultModel("")
   }
 
   const handleManageProvider = (models: Model[], providerId: string) => {
@@ -427,16 +528,20 @@ export function ModelsPage() {
         method: "DELETE",
         headers: {}
       })
-      if (!response.ok) throw new Error("Failed to delete model")
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || t('models.errors.deleteFailed'))
+      }
 
       await fetchModels()
+      await loadDefaultModels()
 
       // If in list view, update the local list
       if (viewMode === 'list') {
         setManagingProviderModels(prev => prev.filter(m => m.model_id !== modelId))
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error")
+      toast.error(err instanceof Error ? err.message : t('models.errors.deleteFailed'))
     }
   }
 
@@ -498,7 +603,6 @@ export function ModelsPage() {
         // Reset if missing required fields
         setFetchedModels([])
         setSelectedFetchedModels([])
-        setFetchModelsError(null)
       }
     }, 500) // 500ms debounce
 
@@ -520,14 +624,14 @@ export function ModelsPage() {
 
     try {
       setIsFetchingModels(true)
-      setFetchModelsError(null)
       const models = await getProviderModels(formData.model_provider, {
         api_key: formData.api_key,
         base_url: formData.base_url
       })
       setFetchedModels(models)
     } catch (err) {
-      setFetchModelsError(err instanceof Error ? err.message : "Failed to fetch models")
+      const errorMessage = err instanceof Error ? err.message : t('models.errors.fetchFailed')
+      toast.error(errorMessage)
       setFetchedModels([])
     } finally {
       setIsFetchingModels(false)
@@ -536,30 +640,74 @@ export function ModelsPage() {
 
   const handleSaveSelectedModels = async () => {
     try {
-      setLoading(true)
       const selected = fetchedModels.filter(m => selectedFetchedModels.includes(m.id))
 
-      for (const model of selected) {
+      // Check for default model for the first selected model
+      // Only check if we are creating LLM models
+      if (formData.category === 'llm') {
+        const targetType = 'general'
+        const hasDefault = (defaultModels as any)[targetType]
+
+        if (!hasDefault && selected.length > 0) {
+          setPendingDefaultType(targetType)
+          setPendingModels(selected.map(m => m.id))
+          setSelectedDefaultModel(selected[0].id)
+          setShowDefaultConfirm(true)
+          return
+        }
+      }
+
+      await submitSelectedModels(selected)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('models.errors.saveFailed'))
+    }
+  }
+
+  const submitSelectedModels = async (selectedModels: ProviderModel[], defaultTypeToSet?: string, defaultModelId?: string) => {
+    try {
+      setLoading(true)
+
+      for (let i = 0; i < selectedModels.length; i++) {
+         const model = selectedModels[i]
+
          const payload: ModelCreate = {
             ...formData,
-            model_id: `${model.id}-${formData.model_provider}`,
+            model_id: `${model.id}-${formData.model_provider}-${user?.id}`,
             model_name: model.id,
-            // Ensure capabilities are set?
-            // For now use defaults from formData which are set in handleConnectProvider
+            default_config_types: (defaultTypeToSet && defaultModelId && model.id === defaultModelId) ? [defaultTypeToSet] : []
          }
 
          const url = `${getApiUrl()}/api/models/`
-         await apiRequest(url, {
+         const response = await apiRequest(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
          })
+
+         if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.detail || t('models.errors.createFailed'))
+        } else if (defaultTypeToSet && defaultModelId && model.id === defaultModelId) {
+             const modelResponse = await response.json()
+             // Set default
+             await apiRequest(`${getApiUrl()}/api/models/user-default`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                config_type: defaultTypeToSet,
+                model_id: modelResponse.id
+              })
+            })
+         }
       }
 
       await fetchModels()
+      await loadDefaultModels()
       closeDialog()
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save models")
+      toast.error(err instanceof Error ? err.message : t('models.errors.saveFailed'))
     } finally {
       setLoading(false)
     }
@@ -582,7 +730,6 @@ export function ModelsPage() {
     // Reset fetch state
     setFetchedModels([])
     setSelectedFetchedModels([])
-    setFetchModelsError(null)
     setIsFetchingModels(false)
 
     // Open in connect mode
@@ -637,13 +784,6 @@ export function ModelsPage() {
             {t('models.header.add')}
           </Button>
         </div>
-
-        {/* Error */}
-        {error && (
-          <div className="bg-destructive text-destructive-foreground p-4 rounded-lg mb-6">
-            {error}
-          </div>
-        )}
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -721,11 +861,16 @@ export function ModelsPage() {
                                 return (
                                   <div
                                     key={m.id}
-                                    className="flex items-center gap-2 cursor-pointer hover:bg-muted/50 p-1 rounded transition-colors"
-                                    onClick={() => handleEdit(m)}
+                                    className={`flex items-center gap-2 p-1 rounded transition-colors ${m.can_edit ? 'cursor-pointer hover:bg-muted/50' : 'cursor-default'}`}
+                                    onClick={() => m.can_edit && handleEdit(m)}
                                   >
-                                    <Badge variant="secondary" className="text-xs px-2 py-0.5 h-auto whitespace-normal text-left">
-                                      <span className="mr-1">{m.model_name}</span>
+                                    <Badge variant="secondary" className={`text-xs px-2 py-0.5 h-auto whitespace-normal text-left flex items-center gap-2 ${!m.is_owner ? 'text-orange-500' : ''}`}>
+                                      <span>{m.model_name}</span>
+                                      {!m.is_owner && (
+                                        <span>
+                                          ({t('models.defaults.shared_from_others')})
+                                        </span>
+                                      )}
                                       {defaultTypes.map(type => {
                                         let labelKey = `models.defaults.${type}`
                                         if (type === 'small_fast') labelKey = 'models.defaults.fast'
@@ -749,12 +894,7 @@ export function ModelsPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between mt-4">
-                          <div className="flex items-center gap-2 text-sm text-green-600">
-                            <div className="w-2 h-2 rounded-full bg-green-500" />
-                            {t('models.card.status.connected')}
-                          </div>
-
+                        <div className="flex items-center justify-end mt-4">
                           <Button variant="ghost" size="sm" onClick={() => handleManageProvider(providerModels, providerId)}>
                             <Settings className="w-4 h-4 mr-2" />
                             {t('models.card.actions.edit')}
@@ -804,7 +944,7 @@ export function ModelsPage() {
         else setIsDialogOpen(true)
       }}>
         {viewMode === 'list' ? (
-          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogContent showCloseButton={false} className="max-w-2xl max-h-[80vh] overflow-y-auto">
             <DialogHeader>
               <div className="flex justify-between items-center pr-8">
                 <DialogTitle>
@@ -827,43 +967,66 @@ export function ModelsPage() {
                 </div>
               ) : (
                 <div className="border rounded-md divide-y">
-                  {managingProviderModels.map(model => (
+                  {managingProviderModels.map(model => {
+                    const defaultTypes = getModelDefaultTypes(model.id)
+                    return (
                     <div key={model.model_id} className="flex items-center justify-between p-4">
                       <div>
-                        <div className="font-medium flex items-center gap-2">
+                        <div className="font-medium flex items-center gap-2 flex-wrap">
                           {model.model_name}
-                          <Badge variant="outline" className="text-xs font-normal">
-                            {model.model_id}
-                          </Badge>
+                          {!model.is_owner && (
+                            <Badge variant="secondary" className="text-xs px-2 py-0.5 h-auto whitespace-normal text-orange-500">
+                              {t('models.defaults.shared_from_others')}
+                            </Badge>
+                          )}
+                          {defaultTypes.map(type => {
+                            let labelKey = `models.defaults.${type}`
+                            if (type === 'small_fast') labelKey = 'models.defaults.fast'
+
+                            return (
+                              <Badge key={type} variant="secondary" className="text-xs px-2 py-0.5 h-auto whitespace-normal text-primary">
+                                {t(labelKey)}
+                              </Badge>
+                            )
+                          })}
+                          {model.is_shared && model.is_owner && (
+                            <Badge variant="secondary" className="text-xs px-2 py-0.5 h-auto whitespace-normal text-orange-500">
+                              {t('models.defaults.shared')}
+                            </Badge>
+                          )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Button variant="ghost" size="icon" onClick={() => handleEdit(model)}>
-                          <Edit className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-destructive hover:text-destructive"
-                          onClick={() => handleDelete(model.model_id)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                      <div className="flex items-center gap-1">
+                        {model.can_edit && (
+                          <Button variant="ghost" size="icon" onClick={() => handleEdit(model)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                        )}
+                        {model.can_delete && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => handleDelete(model.model_id)}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               )}
             </div>
 
             <div className="flex justify-end gap-2 mt-6">
               <Button variant="outline" onClick={closeDialog}>
-                {t('models.defaultDialog.close')}
+                {t('models.dialog.cancel')}
               </Button>
             </div>
           </DialogContent>
         ) : viewMode === 'connect' ? (
-          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogContent showCloseButton={false} className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
                <div className="flex justify-between items-center pr-8">
                  <DialogTitle>
@@ -898,14 +1061,20 @@ export function ModelsPage() {
                  </div>
                </div>
 
-               {fetchModelsError && (
-                 <Alert variant="destructive">
-                   <AlertDescription>{fetchModelsError}</AlertDescription>
-                 </Alert>
-               )}
-
                <div className="mt-4">
-                 <Label className="mb-2 block">{t('models.dialog.availableModels')}</Label>
+                 <div className="flex items-center justify-between mb-2">
+                   <Label>{t('models.dialog.availableModels')}</Label>
+                   <Button
+                     variant="ghost"
+                     size="icon"
+                     className="h-6 w-6"
+                     onClick={handleFetchModels}
+                     disabled={isFetchingModels || (!formData.api_key && !formData.base_url)}
+                     title={t('models.dialog.refreshModels')}
+                   >
+                     <RefreshCw className={`h-3 w-3 ${isFetchingModels ? 'animate-spin' : ''}`} />
+                   </Button>
+                 </div>
                  {isFetchingModels ? (
                    <div className="flex items-center justify-center p-8 border rounded-md text-muted-foreground">
                      <Loader2 className="w-6 h-6 animate-spin mr-2" />
@@ -913,7 +1082,7 @@ export function ModelsPage() {
                    </div>
                  ) : fetchedModels.length > 0 ? (
                    <>
-                     <ScrollArea className="h-max-[300px] border p-4">
+                     <ScrollArea className="max-h-[200px] overflow-y-scroll border p-4">
                        <div className="space-y-2">
                          {fetchedModels.map(model => (
                            <div key={model.id} className="flex items-center space-x-2">
@@ -960,7 +1129,7 @@ export function ModelsPage() {
             </div>
           </DialogContent>
         ) : (
-          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogContent showCloseButton={false} className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <div className="flex items-center gap-2">
                 {managingProviderId && (
@@ -983,12 +1152,6 @@ export function ModelsPage() {
             </DialogHeader>
 
             <div className="flex flex-col gap-4 mt-4">
-              {error && (
-                <Alert>
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-
               {/* Category and Provider - Always visible */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -1061,9 +1224,20 @@ export function ModelsPage() {
               <div>
                 <div className="flex justify-between items-center mb-2">
                   <Label htmlFor="model_name">{t('models.form.name')}</Label>
-                  {isFetchingModels && <span className="text-xs text-muted-foreground animate-pulse">Fetching models...</span>}
-                  {!isFetchingModels && fetchModelsError && !editingModel && (
-                     <span className="text-xs text-destructive">{t('models.error.fetchFailed') || "Fetch failed"}</span>
+                  {!editingModel && (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={handleFetchModels}
+                        disabled={isFetchingModels || (!formData.api_key && !formData.base_url)}
+                        title={t('models.dialog.refreshModels')}
+                        type="button"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${isFetchingModels ? 'animate-spin' : ''}`} />
+                      </Button>
+                    </div>
                   )}
                 </div>
 
@@ -1072,7 +1246,7 @@ export function ModelsPage() {
                     id="model_name"
                     value={formData.model_name}
                     onChange={(e) => setFormData({ ...formData, model_name: e.target.value })}
-                    placeholder="Enter model name"
+                    placeholder={t('models.form.enterModelName')}
                   />
                 ) : (
                   <MultiSelect
@@ -1080,7 +1254,7 @@ export function ModelsPage() {
                     values={formData.model_names || (formData.model_name ? [formData.model_name] : [])}
                     onValuesChange={(values) => setFormData({ ...formData, model_names: values })}
                     options={fetchedModels.map(m => ({ value: m.id, label: m.id }))}
-                    placeholder={fetchedModels.length > 0 ? (t('models.form.selectModel') || "Select models...") : "Enter model names..."}
+                    placeholder={t('models.form.selectModel')}
                   />
                 )}
               </div>
@@ -1176,7 +1350,7 @@ export function ModelsPage() {
 
             <div className="flex justify-end gap-2 mt-6">
               <Button variant="outline" onClick={closeDialog}>
-                {t('models.defaultDialog.close')}
+                {t('models.dialog.cancel')}
               </Button>
               <Button onClick={handleSubmit}>
                 {editingModel ? t('models.form.update') : t('models.form.create')}
@@ -1185,6 +1359,45 @@ export function ModelsPage() {
           </DialogContent>
         )}
       </Dialog>
+
+      <AlertDialog open={showDefaultConfirm} onOpenChange={setShowDefaultConfirm}>
+        <AlertDialogContent>
+          <Button
+            variant="ghost"
+            className="absolute right-4 top-4 h-6 w-6 p-0 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground"
+            onClick={handleCloseDefaultConfirm}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('models.dialog.setDefaultConfirm.title')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingModels.length > 1 && (
+                <div className="pb-2">
+                  <Select
+                    value={selectedDefaultModel}
+                    onValueChange={setSelectedDefaultModel}
+                    options={pendingModels.map(m => ({ value: m, label: m }))}
+                  />
+                </div>
+              )}
+              {t('models.dialog.setDefaultConfirm.description', {
+                type: pendingDefaultType ? t(`models.defaults.${pendingDefaultType}`) : '',
+                model: selectedDefaultModel || formData.model_name
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelDefault}>
+              {t('models.dialog.setDefaultConfirm.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmDefault}>
+              {t('models.dialog.setDefaultConfirm.confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       </div>
     </div>
   )
