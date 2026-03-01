@@ -21,10 +21,8 @@ if _chroma_available:
     from .chroma import ChromaVectorStore as ChromaVectorStore
 
 if _milvus_available:
-    from .milvus import (
-        MilvusConnectionManager as MilvusConnectionManager,
-        MilvusVectorStore as MilvusVectorStore,
-    )
+    from .milvus import MilvusConnectionManager as MilvusConnectionManager
+    from .milvus import MilvusVectorStore as MilvusVectorStore
 
 __all__ = [
     "VectorStore",

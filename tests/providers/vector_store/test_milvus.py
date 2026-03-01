@@ -88,8 +88,10 @@ def fake_milvus_client():
 
 @pytest.fixture
 def patch_milvus_client(fake_milvus_client):
-    with patch("xagent.providers.vector_store.milvus.MilvusClient") as mock_client:
-        mock_client.return_value = fake_milvus_client
+    with patch(
+        "xagent.providers.vector_store.milvus._import_milvus_client_class"
+    ) as mock_import:
+        mock_import.return_value = lambda **kwargs: fake_milvus_client
         yield fake_milvus_client
 
 

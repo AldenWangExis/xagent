@@ -2,15 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional
 from uuid import uuid4
-
-try:
-    from pymilvus import MilvusClient
-except ImportError as e:
-    raise ImportError(
-        "pymilvus is not installed. Please install it with: pip install pymilvus"
-    ) from e
 
 from .base import VectorStore
 
@@ -24,6 +17,30 @@ __all__ = [
 ]
 
 
+if TYPE_CHECKING:
+    # NOTE:
+    # Readability alias: returned runtime object is `pymilvus.MilvusClient`.
+    # We keep this as `Any` in typing to avoid strict mypy failures on untyped
+    # third-party imports (`disallow_any_unimported=true` in this project).
+    MilvusClient = Any
+else:
+    MilvusClient = Any
+
+
+def _import_milvus_client_class() -> Any:
+    try:
+        # NOTE:
+        # `pymilvus` does not provide `py.typed`/type stubs in our CI environment.
+        # Mypy reports this as `import-untyped`, so we silence this specific import
+        # instead of relaxing project-wide type checking rules.
+        from pymilvus import MilvusClient  # type: ignore[import-untyped]
+    except ImportError as e:
+        raise ImportError(
+            "pymilvus is not installed. Please install it with: pip install pymilvus"
+        ) from e
+    return MilvusClient
+
+
 class MilvusConnectionManager:
     """Milvus connection manager."""
 
@@ -32,11 +49,12 @@ class MilvusConnectionManager:
         uri: str,
         token: Optional[str] = None,
         db_name: Optional[str] = None,
-    ) -> MilvusClient:
+    ) -> "MilvusClient":
         if not uri or not uri.strip():
             raise ValueError("Milvus uri must be non-empty")
 
-        return MilvusClient(
+        milvus_client_class = _import_milvus_client_class()
+        return milvus_client_class(
             uri=uri.strip(),
             token=(token or "").strip(),
             db_name=(db_name or "").strip(),
@@ -47,7 +65,7 @@ class MilvusConnectionManager:
         uri_env_var: str = "MILVUS_URI",
         token_env_var: str = "MILVUS_TOKEN",
         db_name_env_var: str = "MILVUS_DB_NAME",
-    ) -> MilvusClient:
+    ) -> "MilvusClient":
         uri = os.getenv(uri_env_var)
         if uri is None:
             raise KeyError(f"Environment variable {uri_env_var} is not set")
@@ -225,7 +243,7 @@ def get_client(
     uri: str,
     token: Optional[str] = None,
     db_name: Optional[str] = None,
-) -> MilvusClient:
+) -> "MilvusClient":
     manager = MilvusConnectionManager()
     return manager.get_client(uri=uri, token=token, db_name=db_name)
 
@@ -234,7 +252,7 @@ def get_client_from_env(
     uri_env_var: str = "MILVUS_URI",
     token_env_var: str = "MILVUS_TOKEN",
     db_name_env_var: str = "MILVUS_DB_NAME",
-) -> MilvusClient:
+) -> "MilvusClient":
     manager = MilvusConnectionManager()
     return manager.get_client_from_env(
         uri_env_var=uri_env_var,
