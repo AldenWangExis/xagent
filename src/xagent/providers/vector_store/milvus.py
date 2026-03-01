@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional
@@ -29,16 +30,12 @@ else:
 
 def _import_milvus_client_class() -> Any:
     try:
-        # NOTE:
-        # `pymilvus` does not provide `py.typed`/type stubs in our CI environment.
-        # Mypy reports this as `import-untyped`, so we silence this specific import
-        # instead of relaxing project-wide type checking rules.
-        from pymilvus import MilvusClient  # type: ignore[import-untyped]
+        pymilvus_module = importlib.import_module("pymilvus")
     except ImportError as e:
         raise ImportError(
             "pymilvus is not installed. Please install it with: pip install pymilvus"
         ) from e
-    return MilvusClient
+    return getattr(pymilvus_module, "MilvusClient")
 
 
 class MilvusConnectionManager:
