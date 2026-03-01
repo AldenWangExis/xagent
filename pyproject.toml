@@ -80,6 +80,7 @@ dev = [
   "flake8>=7.3.0",
   "mypy>=1.16.1",
   "chromadb",
+  "pymilvus>=2.6.9,<3.0.0",
   "pytest-dotenv>=0.5.2",
   "types-PyYAML>=6.0",
   "types-requests>=2.0.0",
