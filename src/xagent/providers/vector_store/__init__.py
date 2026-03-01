@@ -15,19 +15,25 @@ from .lancedb import (
 
 # ChromaVectorStore is optional (requires chromadb)
 _chroma_available = importlib.util.find_spec("chromadb") is not None
+_milvus_available = importlib.util.find_spec("pymilvus") is not None
 
 if _chroma_available:
-    from .chroma import ChromaVectorStore
+    from .chroma import ChromaVectorStore as ChromaVectorStore
 
-    __all__ = [
-        "VectorStore",
-        "LanceDBVectorStore",
-        "LanceDBConnectionManager",
-        "ChromaVectorStore",
-    ]
-else:
-    __all__ = [
-        "VectorStore",
-        "LanceDBVectorStore",
-        "LanceDBConnectionManager",
-    ]
+if _milvus_available:
+    from .milvus import (
+        MilvusConnectionManager as MilvusConnectionManager,
+        MilvusVectorStore as MilvusVectorStore,
+    )
+
+__all__ = [
+    "VectorStore",
+    "LanceDBVectorStore",
+    "LanceDBConnectionManager",
+]
+
+if _chroma_available:
+    __all__.append("ChromaVectorStore")
+
+if _milvus_available:
+    __all__.extend(["MilvusVectorStore", "MilvusConnectionManager"])
