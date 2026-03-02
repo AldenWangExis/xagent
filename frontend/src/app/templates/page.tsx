@@ -339,69 +339,44 @@ export default function TemplatesPage() {
                     return (
                       <div
                         key={template.id}
-                        className="group flex flex-col justify-between p-5 rounded-xl border border-border/40 bg-card hover:border-primary/20 hover:shadow-lg transition-all duration-300"
+                        onClick={() => handleUseTemplate(template.id)}
+                        className="cursor-pointer shadow-md p-5 rounded-xl border border-border/40 bg-card hover:border-primary/20 hover:shadow-lg transition-all duration-300"
                       >
-                        <div>
-                          <div className="flex items-start justify-between mb-4">
-                            <div
-                              className={cn(
-                                "w-10 h-10 rounded-lg flex items-center justify-center transition-transform group-hover:scale-110",
-                                style.bgColor,
-                              )}
-                            >
-                              <Icon className={cn("w-5 h-5", style.color)} />
-                            </div>
-                          </div>
-
-                          <h3 className="font-semibold text-base mb-2 group-hover:text-primary transition-colors">
-                            {template.name}
-                          </h3>
-                          <p className="text-sm text-muted-foreground line-clamp-2 mb-4 h-10">
-                            {template.description}
-                          </p>
-
-                          <div className="flex items-center justify-between text-xs text-muted-foreground mb-4">
-                            <div className="flex items-center gap-3">
-                              <div className="flex items-center gap-1">
-                                <Play className="w-3 h-3 fill-current" />
-                                <span>{template.used_count}</span>
-                              </div>
-                              <button
-                                onClick={(e) =>
-                                  handleLikeTemplate(template.id, e)
-                                }
-                                className="flex items-center gap-1 hover:text-pink-500 transition-colors"
-                              >
-                                <Heart className="w-3 h-3 fill-current" />
-                                <span>{template.likes}</span>
-                              </button>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <span className="text-muted-foreground">
-                                v{template.version}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap gap-1 mb-4">
-                            {template.tags.slice(0, 3).map((tag) => (
-                              <span
-                                key={tag}
-                                className="px-2 py-0.5 text-xs rounded-full bg-secondary/50 text-muted-foreground"
-                              >
-                                {tag}
-                              </span>
-                            ))}
+                        <div className="flex items-start justify-between mb-4">
+                          <div
+                            className={cn(
+                              "w-10 h-10 rounded-lg flex items-center justify-center transition-transform group-hover:scale-110",
+                              style.bgColor,
+                            )}
+                          >
+                            <Icon className={cn("w-5 h-5", style.color)} />
                           </div>
                         </div>
 
-                        <Button
-                          onClick={() => handleUseTemplate(template.id)}
-                          className="w-full bg-secondary/50 hover:bg-secondary text-secondary-foreground hover:text-foreground border border-border/50 shadow-none transition-all"
-                          variant="secondary"
-                        >
-                          {t("templates.useTemplate")}
-                        </Button>
+                        <h3 className="font-semibold text-base mb-2 group-hover:text-primary transition-colors">
+                          {template.name}
+                        </h3>
+                        <p className="text-sm text-muted-foreground line-clamp-2 mb-4 h-10">
+                          {template.description}
+                        </p>
+
+                        <div className="flex items-center justify-between text-xs text-muted-foreground mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1">
+                              <Play className="w-3 h-3 fill-current" />
+                              <span>{template.used_count}</span>
+                            </div>
+                            <button
+                              onClick={(e) =>
+                                handleLikeTemplate(template.id, e)
+                              }
+                              className="flex items-center gap-1 hover:text-pink-500 transition-colors"
+                            >
+                              <Heart className="w-3 h-3 fill-current" />
+                              <span>{template.likes}</span>
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     );
                   })}

@@ -1554,6 +1554,7 @@ Build when you need.`
       },
       validation: {
         nameRequired: "Agent 名称不能为空",
+        instructionsRequired: "Agent 指令不能为空",
         modelRequired: "请选择通用模型",
       },
       success: {
@@ -1600,16 +1601,16 @@ Build when you need.`
         configureDescription: "配置其他专用模型参数",
         noData: "暂无可用模型",
         types: {
-          general: "通用模型",
+          general: "主模型",
           smallFast: "快速模型",
           visual: "视觉模型",
-          compact: "紧凑模型",
+          compact: "长上下文模型",
         },
         tips: {
-          general: "适用于大多数任务的通用大语言模型，平衡了性能和成本。",
-          smallFast: "响应速度快，成本较低，适用于简单任务或需要低延迟的场景。",
-          visual: "具备图像识别和处理能力，适用于涉及图片的任务。",
-          compact: "轻量级模型，适用于资源受限或对即时性要求极高的场景。",
+          general: "所有任务执行的主要模型",
+          smallFast: "用于简单操作",
+          visual: "用于图像理解",
+          compact: "用于压缩对话历史记录",
         },
       },
       knowledgeBase: {
@@ -1657,12 +1658,18 @@ Build when you need.`
     },
     preview: {
       title: "预览",
+      live: "实时预览",
+      synced: "配置已同步",
       initialMessage: "你好！我是你的 Agent 预览。你可以在这里测试你的配置。",
       chat: {
         placeholder: "与你的 Agent 对话...",
         send: "发送",
         you: "你",
         agent: "测试 Agent",
+      },
+      status: {
+        connected: "已连接",
+        disconnected: "未连接",
       },
       errors: {
         noModel: "请先选择通用模型",
