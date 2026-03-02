@@ -1549,6 +1549,7 @@ Build when you need.`
       header: {
         title: "自定义 Agent",
         subtitle: "配置你的 AI Agent 的行为和能力。",
+        backToList: "返回列表",
         create: "创建",
         update: "更新",
         publish: "发布",
@@ -1564,9 +1565,13 @@ Build when you need.`
       success: {
         created: "创建成功",
         createdDesc: "你的 '{name}' 已成功创建",
+        published: "发布成功",
+        unpublished: "已取消发布",
       },
       error: {
         failed: "创建 Agent 失败",
+        publishFailed: "发布 Agent 失败",
+        unpublishFailed: "取消发布 Agent 失败",
         unknown: "发生未知错误",
       }
     },

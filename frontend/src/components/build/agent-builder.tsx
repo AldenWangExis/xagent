@@ -11,7 +11,7 @@ import { ChatInput } from "@/components/chat/ChatInput"
 import { ChatMessage } from "@/components/chat/ChatMessage"
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl, getWsUrl } from "@/lib/utils"
-import { PlusCircle, MessageSquare, Upload, Download, Info, Settings2, Check, Zap, BookOpen } from "lucide-react"
+import { PlusCircle, MessageSquare, Upload, Download, Info, Settings2, Check, Zap, BookOpen, ChevronLeft } from "lucide-react"
 import { useI18n } from "@/contexts/i18n-context"
 import { useAuth } from "@/contexts/auth-context"
 import { FileAttachment } from "@/components/file-attachment"
@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/dialog"
 import { useRouter, useSearchParams } from "next/navigation"
 import { KnowledgeBaseCreationDialog } from "@/components/kb/knowledge-base-creation-dialog"
+import { toast } from "sonner"
 
 interface KnowledgeBase {
   name: string
@@ -120,7 +121,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoUrl, setLogoUrl] = useState<string | null>(null)  // Existing logo URL
   const [isCreating, setIsCreating] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [loadingAgent, setLoadingAgent] = useState(false)
   const [originalData, setOriginalData] = useState<any>(null)
   const [isKbModalOpen, setIsKbModalOpen] = useState(false)
@@ -695,22 +695,19 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }, [name, description, instructions, executionMode, logoFile, suggestedPrompts, selectedKbs, selectedSkills, selectedToolCategories, modelConfig, originalData])
 
   const handleCreate = async () => {
-    // Clear previous error
-    setErrorMessage(null)
-
     // Validation
     if (!name.trim()) {
-      setErrorMessage(t("builds.editor.validation.nameRequired"))
+      toast.error(t("builds.editor.validation.nameRequired"))
       return
     }
 
     if (!instructions.trim()) {
-      setErrorMessage(t("builds.editor.validation.instructionsRequired"))
+      toast.error(t("builds.editor.validation.instructionsRequired"))
       return
     }
 
     if (!modelConfig.general) {
-      setErrorMessage(t("builds.editor.validation.modelRequired"))
+      toast.error(t("builds.editor.validation.modelRequired"))
       return
     }
 
@@ -793,11 +790,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         }
       } else {
         const error = await response.json()
-        setErrorMessage(error.detail || t("builds.editor.error.unknown"))
+        toast.error(error.detail || t("builds.editor.error.unknown"))
       }
     } catch (error) {
       console.error("Failed to save agent:", error)
-      setErrorMessage(t("builds.editor.error.unknown"))
+      toast.error(t("builds.editor.error.unknown"))
     } finally {
       setIsCreating(false)
     }
@@ -807,7 +804,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     if (!agentId) return
 
     setLoadingAgent(true)
-    setErrorMessage(null)
 
     try {
       const response = await apiRequest(`${getApiUrl()}/api/agents/${agentId}/publish`, {
@@ -815,20 +811,18 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       })
 
       if (response.ok) {
-        // Optional: show success message
-        // Update local state to reflect published status
         setOriginalData({
           ...originalData,
-          status: "published"
+          status: "published",
         })
-        router.push("/build")
+        toast.success(t("builds.editor.success.published"))
       } else {
         const error = await response.json()
-        setErrorMessage(error.detail || "Failed to publish agent")
+        toast.error(error.detail || t("builds.editor.error.publishFailed"))
       }
     } catch (error) {
       console.error("Failed to publish agent:", error)
-      setErrorMessage(t("builds.editor.error.unknown"))
+      toast.error(t("builds.editor.error.unknown"))
     } finally {
       setLoadingAgent(false)
     }
@@ -838,7 +832,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     if (!agentId) return
 
     setLoadingAgent(true)
-    setErrorMessage(null)
 
     try {
       const response = await apiRequest(`${getApiUrl()}/api/agents/${agentId}/unpublish`, {
@@ -846,19 +839,18 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       })
 
       if (response.ok) {
-        // Update local state to reflect unpublished status
         setOriginalData({
           ...originalData,
-          status: "draft"
+          status: "draft",
         })
-        router.push("/build")
+        toast.success(t("builds.editor.success.unpublished"))
       } else {
         const error = await response.json()
-        setErrorMessage(error.detail || "Failed to unpublish agent")
+        toast.error(error.detail || t("builds.editor.error.unpublishFailed"))
       }
     } catch (error) {
       console.error("Failed to unpublish agent:", error)
-      setErrorMessage(t("builds.editor.error.unknown"))
+      toast.error(t("builds.editor.error.unknown"))
     } finally {
       setLoadingAgent(false)
     }
@@ -874,17 +866,16 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       })
 
       if (response.ok) {
+        toast.success(t("builds.editor.success.published"))
         setShowSuccessDialog(false)
-        router.push("/build")
+        router.replace(`/build/${createdAgent.id}`)
       } else {
         const error = await response.json()
-        // Show error in dialog? or main error message
-        // For now, let's just close and show main error if possible, or alert
-        alert(error.detail || "Failed to publish agent")
+        toast.error(error.detail || t("builds.editor.error.publishFailed"))
       }
     } catch (error) {
       console.error("Failed to publish agent:", error)
-      alert("Failed to publish agent")
+      toast.error(t("builds.editor.error.unknown"))
     } finally {
       setLoadingAgent(false)
     }
@@ -892,8 +883,9 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const handleDialogClose = () => {
     setShowSuccessDialog(false)
-    // Refresh to enter full edit mode with proper context
-    window.location.reload()
+    if (createdAgent?.id) {
+      router.replace(`/build/${createdAgent.id}`)
+    }
   }
 
   const LeftPanel = (
@@ -1335,21 +1327,37 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       {/* Header */}
       <div className="border-b flex justify-between items-center p-8">
         <div>
+          {isEditMode && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-1 mb-2 text-muted-foreground hover:text-foreground"
+              onClick={() => router.push("/build")}
+            >
+              <ChevronLeft className="h-4 w-4 mr-1" />
+              {t("builds.editor.header.backToList")}
+            </Button>
+          )}
           <h1 className="text-3xl font-bold mb-1">{t("builds.editor.header.title")}</h1>
           <p className="text-muted-foreground">{t("builds.editor.header.subtitle")}</p>
         </div>
         <div className="flex items-center gap-4">
-          {errorMessage && (
-            <div className="text-sm text-destructive">{errorMessage}</div>
+          {isEditMode && !isDirty && originalData?.status === "published" ? (
+            <>
+              <Button variant="outline" onClick={handleUnpublish} disabled={isCreating || loadingAgent}>
+                {t("builds.editor.header.unpublish")}
+              </Button>
+            </>
+          ) : (
+            <Button onClick={isEditMode && !isDirty ? handlePublish : handleCreate} disabled={isCreating || loadingAgent}>
+              {isCreating
+                ? (isEditMode ? t("builds.editor.header.updating") : t("builds.editor.header.creating"))
+                : isEditMode
+                ? (isDirty ? t("builds.editor.header.update") : t("builds.editor.header.publish"))
+                : t("builds.editor.header.create")
+              }
+            </Button>
           )}
-          <Button onClick={isEditMode && !isDirty ? (originalData?.status === "published" ? handleUnpublish : handlePublish) : handleCreate} disabled={isCreating || loadingAgent}>
-            {isCreating
-              ? (isEditMode ? t("builds.editor.header.updating") : t("builds.editor.header.creating"))
-              : isEditMode
-              ? (isDirty ? t("builds.editor.header.update") : (originalData?.status === "published" ? t("builds.editor.header.unpublish") : t("builds.editor.header.publish")))
-              : t("builds.editor.header.create")
-            }
-          </Button>
         </div>
       </div>
 
@@ -1422,13 +1430,15 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               {t("builds.editor.success.createdDesc", { name: createdAgent?.name })}
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={handleDialogClose}>
-              {t("common.cancel") || "Close"}
-            </Button>
-            <Button onClick={handleDialogPublish}>
-              {t("builds.editor.header.publish")}
-            </Button>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <div className="flex w-full sm:w-auto gap-2 justify-end">
+              <Button variant="outline" onClick={handleDialogClose}>
+                {t("common.cancel")}
+              </Button>
+              <Button onClick={handleDialogPublish}>
+                {t("builds.editor.header.publish")}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

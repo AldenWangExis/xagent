@@ -283,7 +283,10 @@ def get_published_agents_tools(
 
     try:
         # Query all published agents
-        query = db.query(Agent).filter(Agent.status == AgentStatus.PUBLISHED)
+        query = db.query(Agent).filter(
+            Agent.status == AgentStatus.PUBLISHED,
+            Agent.user_id == user_id,
+        )
 
         # Exclude the specified agent (to prevent self-calls)
         if excluded_agent_id is not None:
