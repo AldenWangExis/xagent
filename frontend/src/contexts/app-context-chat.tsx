@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useState, useRef, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { FileText, Target, Zap, CheckCircle, XCircle, Wrench, Activity, Search, Lightbulb, AlertTriangle, Info, Brain, Bot } from "lucide-react"
-import { JsonRenderer } from "../components/ui/markdown-renderer"
+import { JsonRenderer, MarkdownRenderer } from "../components/ui/markdown-renderer"
 import { FileAttachment } from "../components/file-attachment"
 import { ReplayScheduler } from '@/lib/replay-scheduler'
 import { CollapsibleSection } from "../components/collapsible-section"
@@ -744,10 +744,88 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
   const { t } = useI18n()
   const router = useRouter()
   const pendingOptimisticMessageId = useRef<string | null>(null)
+  const lastConnectedTaskId = useRef<number | null>(null)
+  const pendingMessageRef = useRef(pendingMessage)
+
+  useEffect(() => {
+    pendingMessageRef.current = pendingMessage
+  }, [pendingMessage])
 
   // Ref to track current state for WebSocket message handler
   const stateRef = useRef(state)
   stateRef.current = state
+
+  const onConnect = useCallback(() => {
+    // Fix: If we should be in replay mode but got disconnected, restore replay state
+    if (stateRef.current.replayTaskId && stateRef.current.taskId === stateRef.current.replayTaskId && !stateRef.current.isReplaying) {
+      dispatch({ type: "SET_REPLAY_PLAYING", payload: true })
+    }
+
+    // Handle clearing messages on reconnection
+    // This prevents stale data issues and fixes race conditions
+    if (lastConnectedTaskId.current === stateRef.current.taskId) {
+      // Reconnection to SAME task -> Clear messages
+      // Keep pending optimistic message if exists
+      const keepMessageId = pendingOptimisticMessageId.current
+      pendingOptimisticMessageId.current = null
+
+      dispatch({ type: "CLEAR_MESSAGES", payload: { keepMessageId } })
+      dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
+      dispatch({ type: "SET_STEPS", payload: [] })
+    } else {
+      // New task connection -> Update tracker, Don't clear (handled by setTaskId)
+      lastConnectedTaskId.current = stateRef.current.taskId
+    }
+
+    // Set history loading state
+    dispatch({ type: "SET_HISTORY_LOADING", payload: true })
+
+    // Safety timeout: if no history arrives within 2 seconds, assume empty or done
+    setTimeout(() => {
+      dispatch({ type: "SET_HISTORY_LOADING", payload: false })
+    }, 2000)
+
+    if (pendingMessageRef.current) {
+      console.log('📤 Sending pending message:', {
+        message: pendingMessageRef.current.message,
+        hasFiles: pendingMessageRef.current.files && pendingMessageRef.current.files.length > 0
+      })
+      // Use socketRef if available? No, use sendChatMessage from useWebSocket result?
+      // Wait, we can't use sendChatMessage here because it's defined inside useWebSocket hook result!
+      // We need to pass sendChatMessage to this callback?
+      // Or move this callback definition AFTER useWebSocket?
+      // But useWebSocket needs onConnect!
+      // Circular dependency!
+
+      // Solution: Use a ref for sendChatMessage?
+      // Or just handle pending message inside useWebSocket's onConnect?
+      // But we want to centralize logic.
+
+      // Let's defer pending message handling to a separate effect or keep it here if we can access sendChatMessage.
+      // We can't access sendChatMessage here.
+    }
+
+    // Auto-execute PENDING tasks from Agent Builder
+    setTimeout(() => {
+      if (pendingTaskToExecute) {
+        const hasUserMessages = stateRef.current.messages.some(m => m.role === 'user')
+        console.log('🔍 onConnect - checking auto-execute:', {
+          hasPendingTask: !!pendingTaskToExecute,
+          pendingDescription: pendingTaskToExecute.description,
+          hasUserMessages,
+        })
+
+        if (!hasUserMessages) {
+          console.log('🚀 Auto-executing PENDING task from Agent Builder (onConnect):', pendingTaskToExecute.description)
+          // sendChatMessage(pendingTaskToExecute.description, []) // Cannot access sendChatMessage
+          pendingTaskToExecute = null
+        } else {
+          console.log('⏭️ Skipping auto-execute, already has user messages')
+          pendingTaskToExecute = null
+        }
+      }
+    }, 1000)
+  }, [])
 
   const {
     isConnected,
@@ -764,45 +842,42 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
     onMessage: (message) => {
       handleMessage(message, dispatch, stateRef.current)
     },
-    onConnect: () => {
-      // Fix: If we should be in replay mode but got disconnected, restore replay state
-      if (state.replayTaskId && state.taskId === state.replayTaskId && !state.isReplaying) {
-        dispatch({ type: "SET_REPLAY_PLAYING", payload: true })
-      }
+    onConnect: onConnect, // Pass the callback
+    autoConnect: true,
+  })
 
-      if (pendingMessage) {
-        console.log('📤 Sending pending message:', {
-          message: pendingMessage.message,
-          hasFiles: pendingMessage.files && pendingMessage.files.length > 0
-        })
-        sendChatMessage(pendingMessage.message, pendingMessage.files)
-        setPendingMessage(null)
-      }
+  // Handle pending messages separately since we need sendChatMessage
+  useEffect(() => {
+    if (isConnected && pendingMessage) {
+      console.log('📤 Sending pending message:', {
+        message: pendingMessage.message,
+        hasFiles: pendingMessage.files && pendingMessage.files.length > 0
+      })
+      sendChatMessage(pendingMessage.message, pendingMessage.files)
+      setPendingMessage(null)
+    }
+  }, [isConnected, pendingMessage, sendChatMessage])
 
-      // Auto-execute PENDING tasks from Agent Builder
-      // Wait a bit for state to sync after receiving task_info event
-      setTimeout(() => {
+  // Handle auto-execute pending task separately
+  useEffect(() => {
+    if (isConnected && pendingTaskToExecute) {
+       // Logic moved to effect
+       // But wait, pendingTaskToExecute is not state, it's a let variable.
+       // Effect won't run when it changes.
+       // But it runs when isConnected changes.
+
+       const timer = setTimeout(() => {
         if (pendingTaskToExecute) {
           const hasUserMessages = stateRef.current.messages.some(m => m.role === 'user')
-          console.log('🔍 onConnect - checking auto-execute:', {
-            hasPendingTask: !!pendingTaskToExecute,
-            pendingDescription: pendingTaskToExecute.description,
-            hasUserMessages,
-          })
-
           if (!hasUserMessages) {
-            console.log('🚀 Auto-executing PENDING task from Agent Builder (onConnect):', pendingTaskToExecute.description)
             sendChatMessage(pendingTaskToExecute.description, [])
-            pendingTaskToExecute = null
-          } else {
-            console.log('⏭️ Skipping auto-execute, already has user messages')
             pendingTaskToExecute = null
           }
         }
-      }, 1000)
-    },
-    autoConnect: true,
-  })
+       }, 1000)
+       return () => clearTimeout(timer)
+    }
+  }, [isConnected, sendChatMessage])
 
   // Debug: Log when taskId is passed to useWebSocket
   useEffect(() => {
@@ -909,6 +984,11 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             if (taskData.status === 'pending' && taskData.description) {
               pendingTaskToExecute = { description: taskData.description }
               console.log('💾 Stored pending task for auto-execution:', taskData.description)
+            }
+
+            // Check if status changed and trigger update if so
+            if (currentState.currentTask?.id === taskData.id.toString() && currentState.currentTask?.status !== taskData.status) {
+               dispatch({ type: "TRIGGER_TASK_UPDATE" })
             }
 
             dispatch({
@@ -1315,7 +1395,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.compactStart'),
+                  action: t('agent.logs.event.actions.action_start_compact'),
                   message: t('agent.logs.event.messages.compactStart'),
                   compact_type: eventData.compact_type,
                   original_tokens: eventData.original_tokens,
@@ -1334,7 +1414,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.compactCompleted'),
+                  action: t('agent.logs.event.actions.action_end_compact'),
                   message: t('agent.logs.event.messages.compactCompleted'),
                   compact_type: eventData.compact_type,
                   original_tokens: eventData.original_tokens,
@@ -1380,7 +1460,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: message.step_id || eventData.step_id || stepName,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.stepStart'),
+                action: t('agent.logs.event.actions.dag_step_start'),
                 step_name: stepName,
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
@@ -1419,7 +1499,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: message.step_id || eventData.step_id || stepName,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.stepCompleted'),
+                action: t('agent.logs.event.actions.dag_step_end'),
                 step_name: stepName,
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
@@ -1488,7 +1568,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: stepId,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.stepFailed'),
+                action: t('agent.logs.event.actions.dag_step_failed'),
                 step_name: stepName,
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
@@ -1676,7 +1756,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmStart'),
+                  action: t('agent.logs.event.actions.llm_call_start'),
                   model_name: modelName,
                   task_type: taskType,
                   ...eventData
@@ -1696,7 +1776,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmCompleted'),
+                  action: t('agent.logs.event.actions.llm_call_end'),
                   model_name: modelName,
                   task_type: taskType,
                   ...eventData
@@ -1730,7 +1810,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmInfo'),
+                  action: t('agent.logs.event.actions.llm_call_info'),
                   model_name: modelName,
                   task_type: taskType,
                   ...eventData
@@ -1768,7 +1848,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmResult'),
+                  action: t('agent.logs.event.actions.llm_call_result'),
                   model_name: modelName,
                   ...eventData
                 }
@@ -1791,7 +1871,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                   <>
                     <Wrench className="h-4 w-4 inline mr-2 text-orange-500" />
-                    {t('agent.logs.event.actions.toolStart')}: {toolName}
+                    {t('agent.logs.event.actions.tool_execution_start')}: {toolName}
                   </>
                 ),
                   timestamp: message.timestamp,
@@ -1806,7 +1886,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.toolStart'),
+                  action: t('agent.logs.event.actions.tool_execution_start'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1826,7 +1906,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                   <>
                     <CheckCircle className="h-4 w-4 inline mr-2 text-green-500" />
-                    {t('agent.logs.event.actions.toolCompleted')}: {toolName}
+                    {t('agent.logs.event.actions.tool_execution_end')}: {toolName}
                   </>
                 ),
                   timestamp: message.timestamp,
@@ -1841,7 +1921,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.toolCompleted'),
+                  action: t('agent.logs.event.actions.tool_execution_end'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1861,7 +1941,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                   <>
                     <XCircle className="h-4 w-4 inline mr-2 text-red-500" />
-                    {t('agent.logs.event.actions.toolFailed')}: {toolName}
+                    {t('agent.logs.event.actions.tool_execution_failed')}: {toolName}
                   </>
                 ),
                   timestamp: message.timestamp,
@@ -1876,7 +1956,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.toolFailed'),
+                  action: t('agent.logs.event.actions.tool_execution_failed'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1906,7 +1986,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.useTool'),
+                  action: t('agent.logs.event.actions.tool_using'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1928,9 +2008,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   id: msgId,
                   role: "assistant",
                   content: <div className="space-y-2">
-                    <div>
-                      {result.content}
-                    </div>
+                    <MarkdownRenderer content={result.content || ""} />
                     <ClarificationForm
                       interactions={clarification.interactions}
                       timeout={clarification.timeout}
@@ -2257,23 +2335,21 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             })
 
             // Only add to trace events for displaying execution logs, do not mark step as failed
-            if (stepId && stepId !== 'unknown') {
-              const traceEvent: TraceEvent = {
-                event_id: generateMessageId(`trace-error-${stepId}`),
-                event_type: eventType,
-                step_id: stepId,
-                timestamp: message.timestamp,
-                data: {
-                  action: t('agent.logs.event.actions.compactStepErrorLog'),
-                  step_name: stepName,
-                  error: errorMessage,
-                  error_type: eventData.error_type,
-                  tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
-                  ...(eventData.execution_time && { execution_time: eventData.execution_time }),
-                }
+            const traceEvent: TraceEvent = {
+              event_id: generateMessageId(`trace-error-${stepId || 'global'}`),
+              event_type: eventType,
+              step_id: stepId,
+              timestamp: message.timestamp,
+              data: {
+                action: t('agent.logs.event.actions.trace_error'),
+                step_name: stepName,
+                error: errorMessage,
+                error_type: eventData.error_type,
+                tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
+                ...(eventData.execution_time && { execution_time: eventData.execution_time }),
               }
-              dispatch({ type: "ADD_TRACE_EVENT", payload: traceEvent })
             }
+            dispatch({ type: "ADD_TRACE_EVENT", payload: traceEvent })
 
             // For step-related errors, do not display in left panel, only in right panel
             // Only display non-step-related global errors in left panel
@@ -2302,7 +2378,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             const msgId = generateMessageId("msg-ai")
             const content = clarification
               ? <>
-                {eventData.content}
+                <MarkdownRenderer content={eventData.content || ""} />
                 <ClarificationForm
                   interactions={clarification.interactions}
                   timeout={clarification.timeout}
@@ -2368,7 +2444,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: eventData.step_id,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactTaskStart'),
+                action: t('agent.logs.event.actions.react_task_start'),
                 message: t('agent.logs.event.messages.reactTaskStart'),
                 ...eventData
               }
@@ -2409,7 +2485,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.reactActionStart') || 'Action Start',
+                  action: t('agent.logs.event.actions.react_action_start') || 'Action Start',
                   ...eventData
                 }
               }
@@ -2461,7 +2537,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.reactActionEnd') || 'Action End',
+                  action: t('agent.logs.event.actions.react_action_end') || 'Action End',
                   ...eventData
                 }
               }
@@ -2487,7 +2563,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               event_type: eventType,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactTaskCompleted'),
+                action: t('agent.logs.event.actions.react_task_end'),
                 message: t('agent.logs.event.messages.reactTaskCompleted'),
                 output: eventData.output
               }
@@ -2520,7 +2596,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: stepId,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactStepStart'),
+                action: t('agent.logs.event.actions.step_start_react'),
                 step_name: stepName,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
                 message: t('agent.logs.event.messages.reactStepStart', { stepName }),
@@ -2554,7 +2630,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: stepId,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactStepCompleted'),
+                action: t('agent.logs.event.actions.step_end_react'),
                 step_name: stepName,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
                 result_data: eventData.result_data,
@@ -2571,7 +2647,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: eventData.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.skillSelectStart'),
+                  action: t('agent.logs.event.actions.skill_select_start'),
                   ...eventData
                 }
               }
@@ -2583,7 +2659,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: eventData.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.skillSelectEnd'),
+                  action: t('agent.logs.event.actions.skill_select_end'),
                   ...eventData
                 }
               }
@@ -2602,8 +2678,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryGenerateStart'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryGenerateStart'),
+                  action: t('agent.logs.event.actions.task_start_memory_generate'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_start_memory_generate'),
                   task: eventData.task,
                   iterations: eventData.iterations,
                   result_length: eventData.result_length,
@@ -2626,8 +2702,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryGenerateCompleted'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryGenerateCompleted'),
+                  action: t('agent.logs.event.actions.task_end_memory_generate'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_end_memory_generate'),
                   insights_generated: eventData.insights_generated,
                   should_store: eventData.should_store,
                   reason: eventData.reason,
@@ -2650,7 +2726,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                     <>
                       <span>
                         <Brain className="h-4 w-4 inline mr-2" />
-                        {t('agent.logs.event.actions.memoryGenerateCompleted')}
+                        {t('agent.logs.event.actions.task_end_memory_generate')}
                       </span>
                       <div className="mt-2">
                         <CollapsibleSection
@@ -2702,8 +2778,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryStoreStart'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryStoreStart'),
+                  action: t('agent.logs.event.actions.task_start_memory_store'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_start_memory_store'),
                   task: eventData.task,
                   memory_category: eventData.memory_category,
                   classification: eventData.classification,
@@ -2720,7 +2796,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                     <>
                       <Brain className="h-4 w-4 inline mr-2" />
-                      {t('agent.logs.event.actions.memoryStoreStart')}
+                      {t('agent.logs.event.actions.task_start_memory_store')}
                       {eventData.task && (
                         <div className="text-sm text-gray-600 mt-1">
                           {t('agent.logs.event.messages.taskLabel')} {eventData.task.length > 100 ? eventData.task.substring(0, 100) + '...' : eventData.task}
@@ -2751,8 +2827,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryStoreCompleted'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryStoreCompleted'),
+                  action: t('agent.logs.event.actions.task_end_memory_store'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_end_memory_store'),
                   storage_success: eventData.storage_success,
                   reason: eventData.reason,
                   decision: eventData.decision,
@@ -2774,7 +2850,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                     <>
                       <span>
                         <Brain className="h-4 w-4 inline mr-2" />
-                        {t('agent.logs.event.actions.memoryStoreCompleted')}
+                        {t('agent.logs.event.actions.task_end_memory_store')}
                       </span>
                       <div className="mt-2">
                         <CollapsibleSection
@@ -2823,8 +2899,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryQuery'),
-                  message: '🔍 ' + t('agent.logs.event.actions.memoryQuery'),
+                  action: t('agent.logs.event.actions.task_start_memory_retrieve'),
+                  message: '🔍 ' + t('agent.logs.event.actions.task_start_memory_retrieve'),
                   // Display full data
                   rawData: eventData,
                 }
@@ -2843,7 +2919,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                     <>
                       <Search className="h-4 w-4 inline mr-2" />
-                      {t('agent.logs.event.actions.memoryQueryStart')}
+                      {t('agent.logs.event.actions.task_start_memory_retrieve')}
                       <div className="mt-1">
                         <CollapsibleSection
                           title={t('agent.logs.event.common.fullData')}
@@ -2874,8 +2950,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryQueryCompleted'),
-                  message: '🔍 ' + t('agent.logs.event.actions.memoryQueryCompleted'),
+                  action: t('agent.logs.event.actions.task_end_memory_retrieve'),
+                  message: '🔍 ' + t('agent.logs.event.actions.task_end_memory_retrieve'),
                   // Display full data
                   rawData: eventData,
                 }
@@ -2915,7 +2991,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                     <>
                       <Search className="h-4 w-4 inline mr-2" />
-                      {t('agent.logs.event.actions.memoryQueryCompleted')}
+                      {t('agent.logs.event.actions.task_end_memory_retrieve')}
                       <div className="mt-2">
                         <CollapsibleSection
                           title={t('agent.logs.event.messages.detailsTitle')}
@@ -3559,6 +3635,15 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         taskId: state.taskId
       })
 
+      // If task is completed, mark it as running immediately to update sidebar
+      if (state.currentTask?.status === 'completed') {
+        dispatch({
+          type: "UPDATE_TASK_STATUS",
+          payload: { status: 'running' }
+        })
+        dispatch({ type: "TRIGGER_TASK_UPDATE" })
+      }
+
       // Optimistically add the user message to the UI
       if (!isDuplicateMessage(message, 'user-message', config?.force)) {
         let content: React.ReactNode = message
@@ -3669,6 +3754,13 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
       // Clear recentMessages cache when switching tasks to prevent false duplicates
       recentMessages.clear()
       isHistoricalDataLoading = false
+
+      // Clear existing data immediately when switching tasks to prevent stale data display
+      // This fixes the issue where messages from the previous task might be cleared
+      // by the connection effect AFTER the new task's history has already arrived.
+      dispatch({ type: "CLEAR_MESSAGES" })
+      dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
+      dispatch({ type: "SET_STEPS", payload: [] })
     }
 
     // Update URL to use dynamic route for task detail page
@@ -3708,29 +3800,6 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
     dispatch({ type: "CLOSE_FILE_PREVIEW" })
   }, [])
 
-  // Historical data is automatically sent by backend when WebSocket connects
-  useEffect(() => {
-    if (isConnected && state.taskId) {
-      // Clear existing data to prepare for incoming historical data
-      // Keep pending optimistic message if exists
-      const keepMessageId = pendingOptimisticMessageId.current
-      pendingOptimisticMessageId.current = null
-
-      dispatch({ type: "CLEAR_MESSAGES", payload: { keepMessageId } })
-      dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
-      dispatch({ type: "SET_STEPS", payload: [] })
-
-      // Set history loading state
-      dispatch({ type: "SET_HISTORY_LOADING", payload: true })
-
-      // Safety timeout: if no history arrives within 2 seconds, assume empty or done
-      const timer = setTimeout(() => {
-        dispatch({ type: "SET_HISTORY_LOADING", payload: false })
-      }, 2000)
-
-      return () => clearTimeout(timer)
-    }
-  }, [isConnected, state.taskId])
 
   // Replay control methods
   const startReplay = useCallback((taskId: number, events: TraceEvent[]) => {

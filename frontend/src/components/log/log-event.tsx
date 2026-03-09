@@ -3,10 +3,9 @@
 import { useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { JSONSyntaxHighlighter } from "@/components/ui/json-syntax-highlighter"
-import { ChevronDown, ChevronRight, Clock, Bot, Wrench, Play, CheckCircle, XCircle, Info, Brain, Search, Sparkles } from "lucide-react"
+import { ChevronDown, ChevronRight, Bot, Wrench, Play, CheckCircle, XCircle, Info, Brain, Search, Sparkles } from "lucide-react"
 import { MessagesPreview } from "./messages-preview"
 import { useI18n } from "@/contexts/i18n-context"
 
@@ -25,49 +24,12 @@ interface LogEventProps {
 // Common log summary component
 function LogSummary({ event }: LogEventProps) {
   const data = event.data as Record<string, any> || {}
-  const action = data.action || event.event_type || null
   const stepName = data.step_name || data.name || ''
   const { t } = useI18n()
 
   // Select icon and color based on action type
   const getActionConfig = () => {
     const configs: Record<string, { icon: React.ReactNode, color: string, labelKey: string }> = {
-      "步骤开始": { icon: <Play className="h-4 w-4" />, color: "text-blue-500", labelKey: "agent.logs.event.labels.start" },
-      "步骤完成": { icon: <CheckCircle className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.completed" },
-      "步骤失败": { icon: <XCircle className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.failed" },
-      "LLM调用开始": { icon: <Bot className="h-4 w-4" />, color: "text-purple-500", labelKey: "agent.logs.event.labels.llmCall" },
-      "LLM调用完成": { icon: <Bot className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.llmCompleted" },
-      "LLM调用失败": { icon: <Bot className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.llmFailed" },
-      "工具调用开始": { icon: <Wrench className="h-4 w-4" />, color: "text-orange-500", labelKey: "agent.logs.event.labels.toolCall" },
-      "工具调用完成": { icon: <Wrench className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.toolCompleted" },
-      "工具调用失败": { icon: <Wrench className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.toolFailed" },
-      "记忆生成开始": { icon: <Brain className="h-4 w-4" />, color: "text-purple-500", labelKey: "agent.logs.event.labels.memoryGenerate" },
-      "记忆生成完成": { icon: <Brain className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.memoryGenerate" },
-      "记忆存储开始": { icon: <Brain className="h-4 w-4" />, color: "text-orange-500", labelKey: "agent.logs.event.labels.memoryStore" },
-      "记忆存储完成": { icon: <Brain className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.memoryStore" },
-      "记忆查询": { icon: <Search className="h-4 w-4" />, color: "text-blue-500", labelKey: "agent.logs.event.labels.memoryQuery" },
-      "记忆查询完成": { icon: <Search className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.memoryQuery" },
-      "上下文压缩开始": { icon: <span className="text-lg">🗜️</span>, color: "text-blue-500", labelKey: "agent.logs.event.labels.compactStart" },
-      "上下文压缩完成": { icon: <span className="text-lg">🗜️</span>, color: "text-green-500", labelKey: "agent.logs.event.labels.compactCompleted" },
-      // English action strings (i18n-en)
-      "Step Start": { icon: <Play className="h-4 w-4" />, color: "text-blue-500", labelKey: "agent.logs.event.labels.start" },
-      "Step Completed": { icon: <CheckCircle className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.completed" },
-      "Step Failed": { icon: <XCircle className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.failed" },
-      "LLM Call Start": { icon: <Bot className="h-4 w-4" />, color: "text-purple-500", labelKey: "agent.logs.event.labels.llmCall" },
-      "LLM Call Completed": { icon: <Bot className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.llmCompleted" },
-      "LLM Call Failed": { icon: <Bot className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.llmFailed" },
-      "Tool Call Start": { icon: <Wrench className="h-4 w-4" />, color: "text-orange-500", labelKey: "agent.logs.event.labels.toolCall" },
-      "Tool Call Completed": { icon: <Wrench className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.toolCompleted" },
-      "Tool Call Failed": { icon: <Wrench className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.toolFailed" },
-      "Memory Generate Start": { icon: <Brain className="h-4 w-4" />, color: "text-purple-500", labelKey: "agent.logs.event.labels.memoryGenerate" },
-      "Memory Generate Completed": { icon: <Brain className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.memoryGenerate" },
-      "Memory Store Start": { icon: <Brain className="h-4 w-4" />, color: "text-orange-500", labelKey: "agent.logs.event.labels.memoryStore" },
-      "Memory Store Completed": { icon: <Brain className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.memoryStore" },
-      "Memory Query": { icon: <Search className="h-4 w-4" />, color: "text-blue-500", labelKey: "agent.logs.event.labels.memoryQuery" },
-      "Memory Query Completed": { icon: <Search className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.memoryQuery" },
-      "Context Compact Start": { icon: <span className="text-lg">🗜️</span>, color: "text-blue-500", labelKey: "agent.logs.event.labels.compactStart" },
-      "Context Compact Completed": { icon: <span className="text-lg">🗜️</span>, color: "text-green-500", labelKey: "agent.logs.event.labels.compactCompleted" },
-      // Event type keys (stable codes)
       "dag_step_start": { icon: <Play className="h-4 w-4" />, color: "text-blue-500", labelKey: "agent.logs.event.labels.start" },
       "dag_step_end": { icon: <CheckCircle className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.completed" },
       "dag_step_failed": { icon: <XCircle className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.failed" },
@@ -89,74 +51,12 @@ function LogSummary({ event }: LogEventProps) {
       "skill_select_end": { icon: <Sparkles className="h-4 w-4" />, color: "text-green-500", labelKey: "agent.logs.event.labels.skillSelectEnd" },
     }
 
-    const config = configs[action]
+    const config = configs[event.event_type]
     if (!config) {
       console.log('🔴🔴🔴 Unknown action 🔴🔴🔴', event)
       return { icon: <Info className="h-4 w-4" />, color: "text-red-500", labelKey: "agent.logs.event.labels.unknown" }
     }
     return config
-  }
-
-  const getActionText = (act: string) => {
-    const map: Record<string, string> = {
-      "步骤开始": "agent.logs.event.actions.stepStart",
-      "步骤完成": "agent.logs.event.actions.stepCompleted",
-      "步骤失败": "agent.logs.event.actions.stepFailed",
-      "LLM调用开始": "agent.logs.event.actions.llmStart",
-      "LLM调用完成": "agent.logs.event.actions.llmCompleted",
-      "LLM调用失败": "agent.logs.event.actions.llmFailed",
-      "工具调用开始": "agent.logs.event.actions.toolStart",
-      "工具调用完成": "agent.logs.event.actions.toolCompleted",
-      "工具调用失败": "agent.logs.event.actions.toolFailed",
-      "记忆生成开始": "agent.logs.event.actions.memoryGenerateStart",
-      "记忆生成完成": "agent.logs.event.actions.memoryGenerateCompleted",
-      "记忆存储开始": "agent.logs.event.actions.memoryStoreStart",
-      "记忆存储完成": "agent.logs.event.actions.memoryStoreCompleted",
-      "记忆查询": "agent.logs.event.actions.memoryQuery",
-      "记忆查询完成": "agent.logs.event.actions.memoryQueryCompleted",
-      "上下文压缩开始": "agent.logs.event.actions.compactStart",
-      "上下文压缩完成": "agent.logs.event.actions.compactCompleted",
-      // English action strings (i18n-en)
-      "Step Start": "agent.logs.event.actions.stepStart",
-      "Step Completed": "agent.logs.event.actions.stepCompleted",
-      "Step Failed": "agent.logs.event.actions.stepFailed",
-      "LLM Call Start": "agent.logs.event.actions.llmStart",
-      "LLM Call Completed": "agent.logs.event.actions.llmCompleted",
-      "LLM Call Failed": "agent.logs.event.actions.llmFailed",
-      "Tool Call Start": "agent.logs.event.actions.toolStart",
-      "Tool Call Completed": "agent.logs.event.actions.toolCompleted",
-      "Tool Call Failed": "agent.logs.event.actions.toolFailed",
-      "Memory Generate Start": "agent.logs.event.actions.memoryGenerateStart",
-      "Memory Generate Completed": "agent.logs.event.actions.memoryGenerateCompleted",
-      "Memory Store Start": "agent.logs.event.actions.memoryStoreStart",
-      "Memory Store Completed": "agent.logs.event.actions.memoryStoreCompleted",
-      "Memory Query": "agent.logs.event.actions.memoryQuery",
-      "Memory Query Completed": "agent.logs.event.actions.memoryQueryCompleted",
-      "Context Compact Start": "agent.logs.event.actions.compactStart",
-      "Context Compact Completed": "agent.logs.event.actions.compactCompleted",
-      // Event type keys (stable codes)
-      "dag_step_start": "agent.logs.event.actions.stepStart",
-      "dag_step_end": "agent.logs.event.actions.stepCompleted",
-      "dag_step_failed": "agent.logs.event.actions.stepFailed",
-      "llm_call_start": "agent.logs.event.actions.llmStart",
-      "llm_call_end": "agent.logs.event.actions.llmCompleted",
-      "llm_call_failed": "agent.logs.event.actions.llmFailed",
-      "tool_execution_start": "agent.logs.event.actions.toolStart",
-      "tool_execution_end": "agent.logs.event.actions.toolCompleted",
-      "tool_execution_failed": "agent.logs.event.actions.toolFailed",
-      "task_start_memory_retrieve": "agent.logs.event.actions.memoryQuery",
-      "task_end_memory_retrieve": "agent.logs.event.actions.memoryQueryCompleted",
-      "task_start_memory_generate": "agent.logs.event.actions.memoryGenerateStart",
-      "task_end_memory_generate": "agent.logs.event.actions.memoryGenerateCompleted",
-      "task_start_memory_store": "agent.logs.event.actions.memoryStoreStart",
-      "task_end_memory_store": "agent.logs.event.actions.memoryStoreCompleted",
-      "action_start_compact": "agent.logs.event.actions.compactStart",
-      "action_end_compact": "agent.logs.event.actions.compactCompleted",
-      "skill_select_start": "agent.logs.event.actions.skillSelectStart",
-      "skill_select_end": "agent.logs.event.actions.skillSelectEnd",
-    }
-    const key = map[act]
-    return key ? t(key) : act
   }
 
   const config = getActionConfig()
@@ -168,7 +68,7 @@ function LogSummary({ event }: LogEventProps) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className={config.color}>{config.icon}</span>
-          <span className="text-sm font-medium">{getActionText(action)}</span>
+          <span className="text-sm font-medium">{t(`agent.logs.event.actions.${event.event_type}`)}</span>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-xs border-muted-foreground/30">
@@ -562,17 +462,16 @@ export function LogEvent({ event }: LogEventProps) {
   // Select details component based on action type
   const getDetailsComponent = () => {
     const type = event.event_type || ''
-    const actLower = typeof action === 'string' ? action.toLowerCase() : ''
 
-    if (actLower.includes('llm调用') || actLower.includes('llm') || type.includes('llm_call')) {
+    if (type.includes('llm_call')) {
       return <LLMCallDetails data={data} />
-    } else if (actLower.includes('工具调用') || actLower.includes('tool') || type.includes('tool_execution')) {
+    } else if (type.includes('tool_execution')) {
       return <ToolCallDetails data={data} />
-    } else if (actLower.includes('上下文压缩') || actLower.includes('compact') || type.includes('compact')) {
+    } else if (type.includes('compact')) {
       return <CompactDetails data={data} />
-    } else if (actLower.includes('记忆查询') || actLower.includes('memory query') || type.includes('memory_retrieve')) {
+    } else if (type.includes('memory_retrieve')) {
       return <MemoryQueryDetails data={data} />
-    } else if (actLower.includes('skill') || type.includes('skill_select')) {
+    } else if (type.includes('skill_select')) {
       return <SkillSelectDetails data={data} />
     } else {
       return <GenericDetails data={data} />

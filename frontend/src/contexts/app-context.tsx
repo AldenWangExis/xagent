@@ -893,7 +893,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             const content = (
               <>
                 <Sparkles className="h-4 w-4 inline mr-2 text-blue-500" />
-                {t('agent.logs.event.actions.skillSelectStart')}
+                {t('agent.logs.event.actions.skill_select_start')}
                 <span className="text-sm text-muted-foreground ml-2">
                   ({availableCount} {availableCount === 1 ? t('agent.logs.event.skill.skill') : t('agent.logs.event.skill.skills')})
                 </span>
@@ -923,14 +923,14 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               content = (
                 <>
                   <Sparkles className="h-4 w-4 inline mr-2 text-green-500" />
-                  {t('agent.logs.event.actions.skillSelectEnd')}（{t('agent.logs.event.skill.skillName')}：{skillName}）
+                  {t('agent.logs.event.actions.skill_select_end')}（{t('agent.logs.event.skill.skillName')}：{skillName}）
                 </>
               )
             } else {
               content = (
                 <>
                   <Sparkles className="h-4 w-4 inline mr-2 text-gray-500" />
-                  {t('agent.logs.event.actions.skillSelectEnd')} - {t('agent.logs.event.skill.no')}
+                  {t('agent.logs.event.actions.skill_select_end')} - {t('agent.logs.event.skill.no')}
                 </>
               )
             }
@@ -1047,7 +1047,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.compactStart'),
+                  action: t('agent.logs.event.actions.action_start_compact'),
                   message: t('agent.logs.event.messages.compactStart'),
                   compact_type: eventData.compact_type,
                   original_tokens: eventData.original_tokens,
@@ -1066,7 +1066,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.compactCompleted'),
+                  action: t('agent.logs.event.actions.action_end_compact'),
                   message: t('agent.logs.event.messages.compactCompleted'),
                   compact_type: eventData.compact_type,
                   original_tokens: eventData.original_tokens,
@@ -1112,7 +1112,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: message.step_id || eventData.step_id || stepName,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.stepStart'),
+                action: t('agent.logs.event.actions.dag_step_start'),
                 step_name: stepName,
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
@@ -1151,7 +1151,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: message.step_id || eventData.step_id || stepName,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.stepCompleted'),
+                action: t('agent.logs.event.actions.dag_step_end'),
                 step_name: stepName,
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
@@ -1220,7 +1220,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: stepId,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.stepFailed'),
+                action: t('agent.logs.event.actions.dag_step_failed'),
                 step_name: stepName,
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
@@ -1408,7 +1408,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmStart'),
+                  action: t('agent.logs.event.actions.llm_call_start'),
                   model_name: modelName,
                   task_type: taskType,
                   ...eventData
@@ -1428,7 +1428,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmCompleted'),
+                  action: t('agent.logs.event.actions.llm_call_end'),
                   model_name: modelName,
                   task_type: taskType,
                   ...eventData
@@ -1462,7 +1462,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmInfo'),
+                  action: t('agent.logs.event.actions.llm_call_info'),
                   model_name: modelName,
                   task_type: taskType,
                   ...eventData
@@ -1500,7 +1500,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.llmResult'),
+                  action: t('agent.logs.event.actions.llm_call_result'),
                   model_name: modelName,
                   ...eventData
                 }
@@ -1521,7 +1521,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                   <>
                     <Wrench className="h-4 w-4 inline mr-2 text-orange-500" />
-                    {t('agent.logs.event.actions.toolStart')}: {toolName}
+                    {t('agent.logs.event.actions.tool_execution_start')}: {toolName}
                   </>
                 ),
                   timestamp: message.timestamp,
@@ -1536,7 +1536,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.toolStart'),
+                  action: t('agent.logs.event.actions.tool_execution_start'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1554,7 +1554,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                   <>
                     <CheckCircle className="h-4 w-4 inline mr-2 text-green-500" />
-                    {t('agent.logs.event.actions.toolCompleted')}: {toolName}
+                    {t('agent.logs.event.actions.tool_execution_end')}: {toolName}
                   </>
                 ),
                   timestamp: message.timestamp,
@@ -1569,7 +1569,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.toolCompleted'),
+                  action: t('agent.logs.event.actions.tool_execution_end'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1587,7 +1587,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                   <>
                     <XCircle className="h-4 w-4 inline mr-2 text-red-500" />
-                    {t('agent.logs.event.actions.toolFailed')}: {toolName}
+                    {t('agent.logs.event.actions.tool_execution_failed')}: {toolName}
                   </>
                 ),
                   timestamp: message.timestamp,
@@ -1602,7 +1602,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.toolFailed'),
+                  action: t('agent.logs.event.actions.tool_execution_failed'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1630,7 +1630,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: message.step_id,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.useTool'),
+                  action: t('agent.logs.event.actions.tool_using'),
                   tool_names: [toolName],
                   ...eventData
                 }
@@ -1960,7 +1960,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.compactStepErrorLog'),
+                  action: t('agent.logs.event.actions.trace_error'),
                   step_name: stepName,
                   error: errorMessage,
                   error_type: eventData.error_type,
@@ -2033,7 +2033,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               event_type: eventType,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactTaskStart'),
+                action: t('agent.logs.event.actions.react_task_start'),
                 message: t('agent.logs.event.messages.reactTaskStart'),
               }
             }
@@ -2045,7 +2045,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               event_type: eventType,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactTaskCompleted'),
+                action: t('agent.logs.event.actions.react_task_end'),
                 message: t('agent.logs.event.messages.reactTaskCompleted'),
               }
             }
@@ -2077,7 +2077,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: stepId,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactStepStart'),
+                action: t('agent.logs.event.actions.step_start_react'),
                 step_name: stepName,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
                 message: t('agent.logs.event.messages.reactStepStart', { stepName }),
@@ -2111,7 +2111,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               step_id: stepId,
               timestamp: message.timestamp,
               data: {
-                action: t('agent.logs.event.actions.reactStepCompleted'),
+                action: t('agent.logs.event.actions.step_end_react'),
                 step_name: stepName,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
                 result_data: eventData.result_data,
@@ -2133,8 +2133,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryGenerateStart'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryGenerateStart'),
+                  action: t('agent.logs.event.actions.task_start_memory_generate'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_start_memory_generate'),
                   task: eventData.task,
                   iterations: eventData.iterations,
                   result_length: eventData.result_length,
@@ -2157,8 +2157,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryGenerateCompleted'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryGenerateCompleted'),
+                  action: t('agent.logs.event.actions.task_end_memory_generate'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_end_memory_generate'),
                   insights_generated: eventData.insights_generated,
                   should_store: eventData.should_store,
                   reason: eventData.reason,
@@ -2181,7 +2181,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                     <>
                       <span>
                         <Brain className="h-4 w-4 inline mr-2" />
-                        {t('agent.logs.event.actions.memoryGenerateCompleted')}
+                        {t('agent.logs.event.actions.task_end_memory_generate')}
                       </span>
                       <div className="mt-2">
                         <CollapsibleSection
@@ -2233,8 +2233,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryStoreStart'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryStoreStart'),
+                  action: t('agent.logs.event.actions.task_start_memory_store'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_start_memory_store'),
                   task: eventData.task,
                   memory_category: eventData.memory_category,
                   classification: eventData.classification,
@@ -2251,7 +2251,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                     <>
                       <Brain className="h-4 w-4 inline mr-2" />
-                      {t('agent.logs.event.actions.memoryStoreStart')}
+                      {t('agent.logs.event.actions.task_start_memory_store')}
                       {eventData.task && (
                         <div className="text-sm text-gray-600 mt-1">
                           {t('agent.logs.event.messages.taskLabel')} {eventData.task.length > 100 ? eventData.task.substring(0, 100) + '...' : eventData.task}
@@ -2282,8 +2282,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryStoreCompleted'),
-                  message: '🧠 ' + t('agent.logs.event.actions.memoryStoreCompleted'),
+                  action: t('agent.logs.event.actions.task_end_memory_store'),
+                  message: '🧠 ' + t('agent.logs.event.actions.task_end_memory_store'),
                   storage_success: eventData.storage_success,
                   reason: eventData.reason,
                   decision: eventData.decision,
@@ -2305,7 +2305,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                     <>
                       <span>
                         <Brain className="h-4 w-4 inline mr-2" />
-                        {t('agent.logs.event.actions.memoryStoreCompleted')}
+                        {t('agent.logs.event.actions.task_end_memory_store')}
                       </span>
                       <div className="mt-2">
                         <CollapsibleSection
@@ -2354,8 +2354,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryQuery'),
-                  message: '🔍 ' + t('agent.logs.event.actions.memoryQuery'),
+                  action: t('agent.logs.event.actions.task_start_memory_retrieve'),
+                  message: '🔍 ' + t('agent.logs.event.actions.task_start_memory_retrieve'),
                   // Display raw data
                   rawData: eventData,
                 }
@@ -2374,7 +2374,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                     <>
                       <Search className="h-4 w-4 inline mr-2" />
-                      {t('agent.logs.event.actions.memoryQueryStart')}
+                      {t('agent.logs.event.actions.task_start_memory_retrieve')}
                       <div className="mt-1">
                         <CollapsibleSection
                           title={t('agent.logs.event.common.fullData')}
@@ -2405,8 +2405,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 step_id: stepId,
                 timestamp: message.timestamp,
                 data: {
-                  action: t('agent.logs.event.actions.memoryQueryCompleted'),
-                  message: '🔍 ' + t('agent.logs.event.actions.memoryQueryCompleted'),
+                  action: t('agent.logs.event.actions.task_end_memory_retrieve'),
+                  message: '🔍 ' + t('agent.logs.event.actions.task_end_memory_retrieve'),
                   // Display raw data
                   rawData: eventData,
                 }
@@ -2446,7 +2446,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   content: (
                     <>
                       <Search className="h-4 w-4 inline mr-2" />
-                      {t('agent.logs.event.actions.memoryQueryCompleted')}
+                      {t('agent.logs.event.actions.task_end_memory_retrieve')}
                       <div className="mt-2">
                         <CollapsibleSection
                           title={t('agent.logs.event.messages.detailsTitle')}

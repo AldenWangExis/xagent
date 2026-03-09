@@ -60,19 +60,27 @@ export interface ChatMessageProps {
   showProcessView?: boolean;
   isVirtual?: boolean;
   taskStatus?: string;
-  isPlanning?: boolean;
 }
 
-function GeneratingIndicator({latestTitle, taskStatus, isPlanning}: {latestTitle?: string, taskStatus?: string, isPlanning?: boolean}) {
+function GeneratingIndicator({latestTitle, taskStatus, errorMessage}: {latestTitle?: string, taskStatus?: string, errorMessage?: string}) {
   const { t } = useI18n();
+
+  if (taskStatus === 'failed' && errorMessage) {
+    return (
+      <div className="py-3 text-sm leading-relaxed text-red-500">
+        <span>{errorMessage}</span>
+      </div>
+    );
+  }
+
   const displayTitle = taskStatus === 'paused'
     ? t("common.taskPaused")
-    : (isPlanning ? t("common.planning") : (latestTitle ? `${latestTitle} ` : t("common.planning")));
+    : (latestTitle ? `${latestTitle} ` : t("common.planning"));
 
   return (
     <div className="py-3 text-sm leading-relaxed text-muted-foreground flex items-center">
       <span>{displayTitle}</span>
-      {taskStatus !== 'paused' && (
+      {!["failed", "paused"].includes(taskStatus || "") && (
         <span className="ml-1 inline-flex items-end gap-1">
           <span className="dot" />
           <span className="dot" />
@@ -117,7 +125,6 @@ export function ChatMessage({
   traceEvents,
   showProcessView,
   taskStatus,
-  isPlanning,
 }: ChatMessageProps) {
   const isUser = role === "user";
   const { t } = useI18n();
@@ -132,27 +139,7 @@ export function ChatMessage({
     if (!e) return "";
     const type = e.event_type || "";
     const action = (typeof e.data?.action === "string" ? (e.data!.action as string) : "") || type;
-    const map: Record<string, string> = {
-      "dag_step_start": "agent.logs.event.actions.stepStart",
-      "dag_step_end": "agent.logs.event.actions.stepCompleted",
-      "dag_step_failed": "agent.logs.event.actions.stepFailed",
-      "llm_call_start": "agent.logs.event.actions.llmStart",
-      "llm_call_end": "agent.logs.event.actions.llmCompleted",
-      "llm_call_failed": "agent.logs.event.actions.llmFailed",
-      "tool_execution_start": "agent.logs.event.actions.toolStart",
-      "tool_execution_end": "agent.logs.event.actions.toolCompleted",
-      "tool_execution_failed": "agent.logs.event.actions.toolFailed",
-      "task_start_memory_retrieve": "agent.logs.event.actions.memoryQuery",
-      "task_end_memory_retrieve": "agent.logs.event.actions.memoryQueryCompleted",
-      "task_start_memory_generate": "agent.logs.event.actions.memoryGenerateStart",
-      "task_end_memory_generate": "agent.logs.event.actions.memoryGenerateCompleted",
-      "task_start_memory_store": "agent.logs.event.actions.memoryStoreStart",
-      "task_end_memory_store": "agent.logs.event.actions.memoryStoreCompleted",
-      "action_start_compact": "agent.logs.event.actions.compactStart",
-      "action_end_compact": "agent.logs.event.actions.compactCompleted",
-    };
-    const key = map[action] || map[type];
-    return key ? t(key) : (action || t("common.executing"));
+    return t(`agent.logs.event.actions.${e.event_type}`) || action || t("common.executing");
   };
 
   const latestTitle = getEventTitle(
@@ -160,6 +147,17 @@ export function ChatMessage({
       ? traceEvents[traceEvents.length - 1]
       : undefined
   );
+
+  let errorMessage = "";
+  if (taskStatus === "failed" && Array.isArray(traceEvents)) {
+    for (let i = traceEvents.length - 1; i >= 0; i--) {
+      const event = traceEvents[i];
+      if (['trace_error', 'task_failed', 'react_task_failed', 'dag_step_failed', 'agent_error'].includes(event.event_type || '')) {
+         errorMessage = (event.data?.error as string) || (event.data?.message as string) || "";
+         if (errorMessage) break;
+      }
+    }
+  }
 
   return (
     <div className="w-full space-y-2 animate-fade-in">
@@ -215,7 +213,7 @@ export function ChatMessage({
                 <div className="text-sm leading-relaxed">{content}</div>
               )
             ) : (
-              !isUser && <GeneratingIndicator latestTitle={latestTitle} taskStatus={taskStatus} isPlanning={isPlanning} />
+              !isUser && <GeneratingIndicator latestTitle={latestTitle} taskStatus={taskStatus} errorMessage={errorMessage} />
             )}
           </div>
         </div>

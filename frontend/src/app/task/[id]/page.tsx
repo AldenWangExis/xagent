@@ -374,7 +374,6 @@ function TaskDetailContent() {
                       showProcessView={true}
                       isVirtual
                       taskStatus={state.currentTask?.status}
-                      isPlanning={isPlanning}
                     />
                   )}
                 </>
