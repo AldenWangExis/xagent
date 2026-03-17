@@ -127,6 +127,28 @@ async def fetch_alibaba_coding_plan_cn_models(
     )
 
 
+async def fetch_minimax_coding_plan_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return curated MiniMax coding plan models (minimax.io)."""
+    _ = api_key, base_url
+    return _static_model_list(
+        curated_models_for_provider("minimax-coding-plan"),
+        owned_by="minimax-coding-plan",
+    )
+
+
+async def fetch_minimax_cn_coding_plan_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return curated MiniMax coding plan models (minimaxi.com)."""
+    _ = api_key, base_url
+    return _static_model_list(
+        curated_models_for_provider("minimax-cn-coding-plan"),
+        owned_by="minimax-cn-coding-plan",
+    )
+
+
 # Provider registry mapping provider names to their fetch functions
 PROVIDER_FETCHERS: Dict[str, Any] = {
     "openai": fetch_openai_models,
@@ -140,6 +162,8 @@ PROVIDER_FETCHERS: Dict[str, Any] = {
     "zhipuai-coding-plan": fetch_openai_models,
     "alibaba-coding-plan": fetch_alibaba_coding_plan_models,
     "alibaba-coding-plan-cn": fetch_alibaba_coding_plan_cn_models,
+    "minimax-coding-plan": fetch_minimax_coding_plan_models,
+    "minimax-cn-coding-plan": fetch_minimax_cn_coding_plan_models,
 }
 
 
