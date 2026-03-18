@@ -16,16 +16,17 @@ except ImportError:
         allow_module_level=True,
     )
 
-from src.xagent.core.tools.adapters.vibe.javascript_executor import (
+from xagent.core.tools.adapters.vibe.javascript_executor import (
     get_javascript_executor_tool,
 )
-from src.xagent.core.tools.adapters.vibe.python_executor import get_python_executor_tool
-from src.xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
+from xagent.core.tools.adapters.vibe.python_executor import get_python_executor_tool
+from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
     create_sandboxed_tool,
     upload_code_to_sandbox,
 )
-from src.xagent.sandbox.base import SandboxConfig
-from src.xagent.sandbox.boxlite_sandbox import (
+from xagent.sandbox import DEFAULT_SANDBOX_IMAGE
+from xagent.sandbox.base import SandboxConfig
+from xagent.sandbox.boxlite_sandbox import (
     BoxliteSandboxService,
     MemBoxliteStore,
     SandboxTemplate,
@@ -65,7 +66,7 @@ async def _create_sandbox(service: BoxliteSandboxService, name: str):
     """Helper function: create sandbox instance"""
     template = SandboxTemplate()
     template.type = "image"
-    template.image = "python:slim"
+    template.image = DEFAULT_SANDBOX_IMAGE
     config = SandboxConfig(
         cpus=1,
         memory=1024,
@@ -392,7 +393,9 @@ class TestTools:
             )
 
             # Install pytest in sandbox
-            install_result = await sb.exec("pip", "install", "pytest", "pytest-asyncio")
+            install_result = await sb.exec(
+                "pip", "install", "--break-system-packages", "pytest", "pytest-asyncio"
+            )
             assert install_result.exit_code == 0, (
                 f"Failed to install pytest: {install_result.stderr}"
             )
@@ -427,7 +430,6 @@ class TestTools:
             except Exception:
                 pass
 
-    @pytest.mark.skip(reason="Requires custom image with Python and Node.js")
     @pytest.mark.asyncio(loop_scope="module")
     async def test_javascript_executor_in_sandbox(self):
         """
@@ -467,7 +469,9 @@ class TestTools:
             )
 
             # Install pytest and Node.js dependencies in sandbox
-            install_result = await sb.exec("pip", "install", "pytest")
+            install_result = await sb.exec(
+                "pip", "install", "--break-system-packages", "pytest"
+            )
             assert install_result.exit_code == 0, (
                 f"Failed to install pytest: {install_result.stderr}"
             )
@@ -590,7 +594,10 @@ class TestSandboxVsLocal:
 
                     def _normalize(s: str) -> str:
                         # Replace module file paths: <module 'x' from '/path/to/x.so'>
-                        return re.sub(r"from '[^']*'", "from '<path>'", s)
+                        s = re.sub(r"from '[^']*'", "from '<path>'", s)
+                        # Normalize built-in modules: <module 'x' (built-in)>
+                        s = re.sub(r"\(built-in\)", "from '<path>'", s)
+                        return s
 
                     local_norm = _normalize(local_result["output"])
                     sandbox_norm = _normalize(sandbox_result["output"])

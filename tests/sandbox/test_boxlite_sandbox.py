@@ -17,8 +17,9 @@ except ImportError:
         "boxlite not installed, skipping sandbox tests", allow_module_level=True
     )
 
-from src.xagent.sandbox.base import SandboxConfig, SandboxTemplate
-from src.xagent.sandbox.boxlite_sandbox import BoxliteSandboxService, MemBoxliteStore
+from xagent.sandbox import DEFAULT_SANDBOX_IMAGE
+from xagent.sandbox.base import SandboxConfig, SandboxTemplate
+from xagent.sandbox.boxlite_sandbox import BoxliteSandboxService, MemBoxliteStore
 
 
 @pytest.fixture(scope="module")
@@ -70,7 +71,7 @@ class TestBoxliteSandboxService:
             print("\n=== Test creating and deleting sandbox ===")
 
             # Create sandbox
-            template = SandboxTemplate(type="image", image="python:slim")
+            template = SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE)
 
             temp_dir = tempfile.mkdtemp()
             config = SandboxConfig(
@@ -185,7 +186,7 @@ class TestBoxliteSandboxService:
             # First creation
             sandbox1 = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -231,13 +232,13 @@ class TestBoxliteSandboxService:
 
             sandbox1 = await service.get_or_create(
                 sandbox_names[0],
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
             sandbox2 = await service.get_or_create(
                 sandbox_names[1],
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -280,7 +281,7 @@ class TestBoxliteSandboxService:
                 print(f"Task {task_id}: Starting get_or_create")
                 sandbox = await service.get_or_create(
                     name,
-                    template=SandboxTemplate(type="image", image="python:slim"),
+                    template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                     config=SandboxConfig(cpus=1, memory=256),
                 )
                 print(f"Task {task_id}: get_or_create completed")
@@ -330,7 +331,7 @@ class TestBoxliteSandboxService:
             # Create sandbox first
             sandbox = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -377,7 +378,7 @@ class TestBoxliteSandboxService:
             # Create sandbox first
             sandbox = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -443,7 +444,7 @@ class TestBoxliteSandbox:
 
             sandbox = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -484,11 +485,13 @@ class TestBoxliteSandbox:
 
             sandbox = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
-            result = await sandbox.exec("pip", "install", "pytest")
+            result = await sandbox.exec(
+                "pip", "install", "--break-system-packages", "pytest"
+            )
             print(f"Output:\n{result.stdout}")
 
             # Run Python code
@@ -532,7 +535,7 @@ class TestBoxliteSandbox:
 
             sandbox = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="node:22-slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -580,7 +583,7 @@ class TestBoxliteSandbox:
 
             sandbox = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -636,7 +639,7 @@ class TestBoxliteSandbox:
 
             sandbox = await service.get_or_create(
                 name,
-                template=SandboxTemplate(type="image", image="python:slim"),
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=256),
             )
 
@@ -726,7 +729,7 @@ class TestBoxliteSandbox:
                 # Create sandbox with volume mount
                 sandbox = await service.get_or_create(
                     name,
-                    template=SandboxTemplate(type="image", image="python:slim"),
+                    template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                     config=SandboxConfig(
                         cpus=1,
                         memory=256,

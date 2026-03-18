@@ -155,6 +155,7 @@ class SandboxedToolWrapper(AbstractBaseTool):
                         self._sandbox.exec(
                             "pip",
                             "install",
+                            "--break-system-packages",
                             "-r",
                             "/tmp/requirements.txt",
                         ),

@@ -9,12 +9,14 @@ import asyncio
 import logging
 import os
 import tempfile
+import textwrap
 import uuid
 from typing import Optional
 
 import boxlite  # type: ignore[import-not-found]
 from boxlite import SimpleBox  # type: ignore[unused-ignore]
 
+from . import DEFAULT_SANDBOX_IMAGE
 from .base import (
     CodeType,
     ExecResult,
@@ -181,6 +183,7 @@ class BoxliteSandbox(Sandbox):
         """
         Execute code snippet.
         """
+        code = textwrap.dedent(code)
         if code_type == "python":
             return await self.exec("python", "-c", code, env=env)
         elif code_type == "javascript":
@@ -391,7 +394,9 @@ class BoxliteSandboxService(SandboxService):
                     info = _get_info_from_box_info(raw_box.info())
             else:
                 # Box doesn't exist, create new one
-                tpl = template or SandboxTemplate(type="image", image="python:slim")
+                tpl = template or SandboxTemplate(
+                    type="image", image=DEFAULT_SANDBOX_IMAGE
+                )
                 cfg = config or SandboxConfig()
                 info = SandboxInfo(name=name, state="running", template=tpl, config=cfg)
 

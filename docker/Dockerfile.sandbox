@@ -26,6 +26,9 @@ COPY docker/sandbox-requirements.txt /tmp/sandbox-requirements.txt
 RUN pip install --no-cache-dir --break-system-packages -r /tmp/sandbox-requirements.txt \
     && rm /tmp/sandbox-requirements.txt
 
+# Allow pip install without --break-system-packages globally
+RUN printf '[global]\nbreak-system-packages = true\n' > /etc/pip.conf
+
 ########################
 
 # Create sandbox user

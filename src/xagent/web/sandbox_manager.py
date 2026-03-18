@@ -7,7 +7,7 @@ import os
 import threading
 from typing import Optional
 
-from ..sandbox import SandboxService
+from ..sandbox import DEFAULT_SANDBOX_IMAGE, SandboxService
 from ..sandbox.base import Sandbox, SandboxConfig, SandboxTemplate
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,20 @@ class SandboxManager:
         """
         self._service: SandboxService = service
 
+    def _get_sandbox_config(self) -> tuple[str, int, int]:
+        sandbox_image = os.getenv("SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE)
+        try:
+            sandbox_cpus = int(os.getenv("SANDBOX_CPUS", "1"))
+        except ValueError:
+            logger.warning("Invalid SANDBOX_CPUS value, using default")
+            sandbox_cpus = 1
+        try:
+            sandbox_memory = int(os.getenv("SANDBOX_MEMORY", "512"))
+        except ValueError:
+            logger.warning("Invalid SANDBOX_MEMORY value, using default")
+            sandbox_memory = 512
+        return sandbox_image, sandbox_cpus, sandbox_memory
+
     async def get_or_create_sandbox(
         self,
         lifecycle_type: str,
@@ -43,17 +57,7 @@ class SandboxManager:
             Sandbox instance
         """
         # TODO: Determine template and config based on user configuration
-        sandbox_image = os.getenv("SANDBOX_IMAGE", "python:slim")
-        try:
-            sandbox_cpus = int(os.getenv("SANDBOX_CPUS", "1"))
-        except ValueError:
-            logger.warning("Invalid SANDBOX_CPUS value, using default")
-            sandbox_cpus = 1
-        try:
-            sandbox_memory = int(os.getenv("SANDBOX_MEMORY", "512"))
-        except ValueError:
-            logger.warning("Invalid SANDBOX_MEMORY value, using default")
-            sandbox_memory = 512
+        sandbox_image, sandbox_cpus, sandbox_memory = self._get_sandbox_config()
 
         template = SandboxTemplate(type="image", image=sandbox_image)
         config = SandboxConfig(cpus=sandbox_cpus, memory=sandbox_memory)
@@ -95,7 +99,7 @@ class SandboxManager:
         """
         Warmup default image.
         """
-        sandbox_image = os.getenv("SANDBOX_IMAGE", "python:slim")
+        sandbox_image, sandbox_cpus, sandbox_memory = self._get_sandbox_config()
         warmup_name = "__warmup__"
         try:
             template = SandboxTemplate(type="image", image=sandbox_image)
@@ -109,9 +113,11 @@ class SandboxManager:
         except Exception as e:
             logger.error(f"Failed to warmup sandbox image: {e}")
 
-    async def shutdown_all(self) -> None:
+    async def cleanup(self) -> None:
         """
-        Stop all running sandboxes. Called on app shutdown.
+        Stop all running sandboxes.
+        Delete sandboxes whose image differs from the current config
+        so they get recreated with the new image next time.
         """
         try:
             sandboxes = await self._service.list_sandboxes()
@@ -119,25 +125,46 @@ class SandboxManager:
                 logger.info("No sandboxes to clean up")
                 return
 
-            running = [sb for sb in sandboxes if sb.state == "running"]
-            if not running:
-                logger.info("No running sandboxes to stop")
-                return
+            sandbox_image, sandbox_cpus, sandbox_memory = self._get_sandbox_config()
 
-            logger.info(f"Stopping {len(running)} running sandbox(es)...")
-            for sb in running:
+            for sb in sandboxes:
                 try:
-                    box = await self._service.get_or_create(
-                        sb.name, template=sb.template, config=sb.config
-                    )
-                    await box.stop()
-                    logger.debug(f"Stopped sandbox: {sb.name}")
-                except Exception as e:
-                    logger.error(f"Failed to stop sandbox {sb.name}: {e}")
+                    # Delete sandbox if config changed (force recreate on next start)
+                    image_changed = sb.template.image != sandbox_image
+                    cpus_changed = sb.config.cpus != sandbox_cpus
+                    memory_changed = sb.config.memory != sandbox_memory
+                    if image_changed or cpus_changed or memory_changed:
+                        changes = []
+                        if image_changed:
+                            changes.append(
+                                f"image: {sb.template.image} -> {sandbox_image}"
+                            )
+                        if cpus_changed:
+                            changes.append(f"cpus: {sb.config.cpus} -> {sandbox_cpus}")
+                        if memory_changed:
+                            changes.append(
+                                f"memory: {sb.config.memory} -> {sandbox_memory}"
+                            )
+                        logger.info(
+                            f"Config changed for sandbox [{sb.name}]: "
+                            f"{', '.join(changes)}, deleting"
+                        )
+                        await self._service.delete(sb.name)
+                        continue
 
-            logger.info("All running sandboxes stopped")
+                    # Stop running sandboxes with matching image
+                    if sb.state == "running":
+                        box = await self._service.get_or_create(
+                            sb.name, template=sb.template, config=sb.config
+                        )
+                        await box.stop()
+                        logger.debug(f"Stopped sandbox: {sb.name}")
+                except Exception as e:
+                    logger.error(f"Failed to handle sandbox {sb.name}: {e}")
+
+            logger.info("Sandbox cleanup completed")
         except Exception as e:
-            logger.error(f"Failed to shut down sandboxes: {e}")
+            logger.error(f"Failed to cleanup sandboxes: {e}")
 
 
 # Global sandbox manager instance

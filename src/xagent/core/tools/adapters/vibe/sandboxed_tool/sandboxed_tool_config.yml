@@ -24,6 +24,7 @@ execute_python_code:
   env_vars: []
 
 execute_javascript_code:
+  sandbox_enabled: true
   tool_class: "xagent.core.tools.adapters.vibe.javascript_executor:JavaScriptExecutorTool"
   packages: []
   env_vars: []

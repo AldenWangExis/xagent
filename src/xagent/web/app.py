@@ -184,7 +184,7 @@ async def startup_event() -> None:
 
     sandbox_mgr = get_sandbox_manager()
     if sandbox_mgr:
-        await sandbox_mgr.shutdown_all()
+        await sandbox_mgr.cleanup()
         await sandbox_mgr.warmup()
         logger.info("Sandbox manager initialized and warmed up")
     else:
@@ -203,7 +203,7 @@ async def shutdown_event() -> None:
 
     sandbox_mgr = get_sandbox_manager()
     if sandbox_mgr:
-        await sandbox_mgr.shutdown_all()
+        await sandbox_mgr.cleanup()
 
 
 # Frontend is now served by Next.js at http://localhost:3000

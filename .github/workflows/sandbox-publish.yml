@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag (e.g. v0.1.0, latest)'
+        description: 'Image tag (e.g. 0.1.0, latest)'
         required: true
         default: 'latest'
 
@@ -52,6 +52,7 @@ jobs:
           images: ${{ env.SANDBOX_IMAGE }}
           tags: |
             type=semver,pattern={{version}},enable=${{ github.event_name == 'push' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
             type=raw,value=${{ github.event.inputs.tag || 'latest' }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build and push sandbox image

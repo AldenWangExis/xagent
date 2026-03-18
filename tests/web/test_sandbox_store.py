@@ -15,7 +15,12 @@ except ImportError:
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from xagent.sandbox import SandboxConfig, SandboxInfo, SandboxTemplate
+from xagent.sandbox import (
+    DEFAULT_SANDBOX_IMAGE,
+    SandboxConfig,
+    SandboxInfo,
+    SandboxTemplate,
+)
 from xagent.web.models.database import Base
 from xagent.web.models.sandbox import SandboxInfo as SandboxInfoModel
 from xagent.web.sandbox_store import SANDBOX_TYPE_BOXLITE, DBBoxliteStore
@@ -52,7 +57,7 @@ def sample_sandbox_info():
     """Create sample SandboxInfo with all config fields"""
     template = SandboxTemplate(
         type="image",
-        image="python:3.11-slim",
+        image=DEFAULT_SANDBOX_IMAGE,
     )
     config = SandboxConfig(
         working_dir="/workspace",
@@ -96,7 +101,7 @@ class TestDBBoxliteStore:
         # Verify template and config JSON
         template_data = json.loads(model.template)
         assert template_data["type"] == "image"
-        assert template_data["image"] == "python:3.11-slim"
+        assert template_data["image"] == DEFAULT_SANDBOX_IMAGE
 
         config_data = json.loads(model.config)
         assert config_data["cpus"] == 2
@@ -137,7 +142,7 @@ class TestDBBoxliteStore:
         assert info.name == "test-sandbox"
         assert info.state == "running"
         assert info.template.type == "image"
-        assert info.template.image == "python:3.11-slim"
+        assert info.template.image == DEFAULT_SANDBOX_IMAGE
         assert info.config.cpus == 2
         assert info.config.memory == 1024
         assert info.config.env == {"PYTHONPATH": "/app", "DEBUG": "true"}

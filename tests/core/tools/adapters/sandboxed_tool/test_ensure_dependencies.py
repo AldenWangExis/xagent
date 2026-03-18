@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
+from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
     SandboxedToolWrapper,
 )
 
