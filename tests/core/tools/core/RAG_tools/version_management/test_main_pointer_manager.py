@@ -56,8 +56,8 @@ class TestMainPointerManager:
         table.search.return_value.where.return_value.to_pandas.return_value = (
             pd.DataFrame()
         )
-        conn.open_table.side_effect = (
-            lambda name: docs_table if name == "documents" else table
+        conn.open_table.side_effect = lambda name: (
+            docs_table if name == "documents" else table
         )
         conn.table_names.return_value = ["main_pointers"]
         mock_get_conn.return_value = conn
@@ -98,8 +98,8 @@ class TestMainPointerManager:
         )
 
         table.search.return_value.where.return_value.to_pandas.return_value = row_df
-        conn.open_table.side_effect = (
-            lambda name: docs_table if name == "documents" else table
+        conn.open_table.side_effect = lambda name: (
+            docs_table if name == "documents" else table
         )
         conn.table_names.return_value = ["main_pointers"]
         mock_get_conn.return_value = conn
@@ -154,8 +154,8 @@ class TestMainPointerManager:
         )
         table.search.return_value.where.return_value.to_pandas.return_value = df
         table.search.return_value.where.return_value.count_rows.return_value = 1
-        conn.open_table.side_effect = (
-            lambda name: docs_table if name == "documents" else table
+        conn.open_table.side_effect = lambda name: (
+            docs_table if name == "documents" else table
         )
         conn.table_names.return_value = ["main_pointers"]
         mock_get_conn.return_value = conn
@@ -213,8 +213,8 @@ class TestMainPointerManager:
             return mock_res
 
         table.search.return_value.where.side_effect = capture_where
-        conn.open_table.side_effect = (
-            lambda name: docs_table if name == "documents" else table
+        conn.open_table.side_effect = lambda name: (
+            docs_table if name == "documents" else table
         )
         conn.table_names.return_value = ["main_pointers"]
         mock_get_conn.return_value = conn
@@ -247,8 +247,8 @@ class TestMainPointerManager:
             return mock_result
 
         table.search.return_value.where.side_effect = capture_where
-        conn.open_table.side_effect = (
-            lambda name: docs_table if name == "documents" else table
+        conn.open_table.side_effect = lambda name: (
+            docs_table if name == "documents" else table
         )
         mock_get_conn.return_value = conn
 
@@ -404,8 +404,8 @@ class TestMainPointerManager:
         table.search.return_value.where.return_value.to_pandas.return_value = (
             existing_df
         )
-        conn.open_table.side_effect = (
-            lambda name: docs_table if name == "documents" else table
+        conn.open_table.side_effect = lambda name: (
+            docs_table if name == "documents" else table
         )
         conn.table_names.return_value = ["main_pointers"]
         mock_get_conn.return_value = conn
@@ -463,8 +463,8 @@ class TestMainPointerManager:
         table.search.return_value.where.return_value.to_pandas.return_value = (
             existing_df
         )
-        conn.open_table.side_effect = (
-            lambda name: docs_table if name == "documents" else table
+        conn.open_table.side_effect = lambda name: (
+            docs_table if name == "documents" else table
         )
         conn.table_names.return_value = ["main_pointers"]
         mock_get_conn.return_value = conn

@@ -432,9 +432,18 @@ async def upload_file(
                 detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE // (1024 * 1024)}MB",
             )
 
-        target_path = _build_unique_file_path(
-            get_upload_path(uploaded.filename, task_id, folder, _user_id_value(user))
-        )
+        # get_upload_path may raise ValueError for invalid folder/collection names
+        try:
+            target_path = _build_unique_file_path(
+                get_upload_path(
+                    uploaded.filename, task_id, folder, _user_id_value(user)
+                )
+            )
+        except ValueError as e:
+            logger.warning(f"Invalid folder name rejected: {folder!r} - {e}")
+            raise HTTPException(
+                status_code=422, detail=f"Invalid folder name: {str(e)}"
+            ) from e
         with open(target_path, "wb") as buffer:
             buffer.write(content)
 

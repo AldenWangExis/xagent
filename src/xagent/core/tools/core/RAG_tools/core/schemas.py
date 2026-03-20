@@ -1173,6 +1173,10 @@ class IngestionResult(BaseModel):
     warnings: List[str] = Field(
         default_factory=list, description="Non-fatal warnings encountered"
     )
+    file_id: Optional[str] = Field(
+        None,
+        description="Uploaded file ID for preview/download via /api/files (when ingest registers the file)",
+    )
 
 
 # ------------------------- Management -------------------------

@@ -302,13 +302,14 @@ class WorkspaceFileOperations:
         logger.debug(
             "Successfully wrote file: %s with file_id: %s", resolved_path, file_id
         )
+        # Use resolved workspace_dir so relative_to works on macOS where
+        # /var can be symlink to /private/var (resolved_path has /private, raw dir may not).
+        workspace_root = self.workspace.workspace_dir.resolve()
         return {
             "success": True,
             "file_id": file_id,
             "filename": resolved_path.name,
-            "relative_path": str(
-                resolved_path.relative_to(self.workspace.workspace_dir)
-            ),
+            "relative_path": str(resolved_path.relative_to(workspace_root)),
             "file_path": str(resolved_path),
         }
 

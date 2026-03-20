@@ -225,9 +225,9 @@ examples/*.html
 uv.lock
 
 # filelock artifacts from tests (mock paths like <MagicMock ...>.lock)
-.*MagicMock.*\.lock
+*MagicMock*.lock
 
-# Root directory markdown files (except README.md and AGENTS.md)
+# Root directory markdown files (except README.md, AGENTS.md, CLAUDE.md, CHANGELOG.md)
 *.md
 !README.md
 !AGENTS.md

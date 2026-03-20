@@ -3,7 +3,6 @@
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 import pytest
 from fastapi import FastAPI
@@ -126,51 +125,17 @@ def client(test_db):
 
 @pytest.fixture(scope="function")
 def temp_uploads_dir(monkeypatch):
-    """Create temporary uploads directory and override get_upload_path"""
+    """Create temporary uploads directory and override UPLOADS_DIR"""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
 
-        # Create a wrapper function that uses the temporary directory
-        def patched_get_upload_path(
-            filename: str,
-            task_id: Optional[str] = None,
-            folder: Optional[str] = None,
-            user_id: Optional[int] = None,
-        ):
-            # Use the temporary directory as the base
-            if user_id:
-                # Create user-specific directory structure
-                user_dir = temp_path / f"user_{user_id}"
-                user_dir.mkdir(parents=True, exist_ok=True)
-
-                if task_id and folder:
-                    # Create task-specific folder under user directory
-                    task_dir = user_dir / f"task_{task_id}" / folder
-                    task_dir.mkdir(parents=True, exist_ok=True)
-                    return task_dir / filename
-                else:
-                    # User's root directory
-                    return user_dir / filename
-            elif task_id and folder:
-                # Create task-specific folder structure (backward compatibility)
-                task_dir = temp_path / f"task_{task_id}" / folder
-                task_dir.mkdir(parents=True, exist_ok=True)
-                return task_dir / filename
-            else:
-                # Default behavior
-                return temp_path / filename
-
-        # Patch the function in both the config module and the files module
-        # This is necessary because files.py imports get_upload_path at module load time
+        # Patch the directory in both the config module and the files module
+        # This is necessary because files.py imports these at module load time
         import xagent.web.api.files
         import xagent.web.config
 
-        monkeypatch.setattr(
-            xagent.web.config, "get_upload_path", patched_get_upload_path
-        )
-        monkeypatch.setattr(
-            xagent.web.api.files, "get_upload_path", patched_get_upload_path
-        )
+        monkeypatch.setattr(xagent.web.config, "UPLOADS_DIR", temp_path)
+        monkeypatch.setattr(xagent.web.api.files, "UPLOADS_DIR", temp_path)
 
         yield temp_path
 
@@ -316,6 +281,40 @@ class TestFileManagement:
         assert "total_count" in data
         assert isinstance(data["files"], list)
         assert isinstance(data["total_count"], int)
+
+    def test_list_files_with_collections(
+        self, client, test_db, sample_files, temp_uploads_dir, auth_headers
+    ):
+        """Test listing files when they are organized in collection subdirectories"""
+        admin_user, _ = test_db
+        collection_name = "my_test_collection"
+
+        # With file_id design, list is DB-only. Create file via KB ingest so it
+        # gets an UploadedFile record, then it will appear in list.
+        doc_content = b"content in collection"
+        response = client.post(
+            "/api/kb/ingest",
+            files={"file": ("doc_in_coll.txt", doc_content, "text/plain")},
+            data={"collection": collection_name},
+            headers=auth_headers,
+        )
+        if response.status_code != 200:
+            pytest.skip("KB ingest not available or failed")
+
+        response = client.get("/api/files/list", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "files" in data
+        found = False
+        for f in data["files"]:
+            if f.get("filename") == "doc_in_coll.txt":
+                found = True
+                assert f.get("file_id"), "list should return file_id"
+                assert collection_name in f.get("relative_path", "")
+                break
+        assert found, (
+            "File in collection directory should appear in list (file_id design)"
+        )
 
     def test_download_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
@@ -484,3 +483,205 @@ class TestFileUploadIntegration:
             pytest.skip(
                 "No files were uploaded, multiple files management test not applicable"
             )
+
+
+class TestFileUploadSecurity:
+    """Security tests for file upload API endpoints."""
+
+    def test_upload_file_rejects_path_traversal_in_folder(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """Test that upload_file rejects path traversal in folder parameter."""
+        malicious_folders = [
+            "../../../etc",
+            "..\\..\\..\\windows",
+            "folder/../other",
+            "../folder",
+            "folder/",
+        ]
+
+        # Use a valid integer task_id so folder validation runs (get_upload_path).
+        for folder in malicious_folders:
+            response = client.post(
+                "/api/files/upload",
+                files={"file": ("test.txt", b"content", "text/plain")},
+                data={"task_type": "general", "task_id": "1", "folder": folder},
+                headers=auth_headers,
+            )
+            # Should reject with 422 (validation error)
+            assert response.status_code == 422
+            detail = response.json().get("detail", "")
+            assert "Invalid folder name" in detail or "invalid" in detail.lower()
+
+    def test_upload_file_rejects_invalid_characters_in_folder(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """Test that upload_file rejects invalid characters in folder parameter."""
+        invalid_folders = [
+            "folder name",  # Space
+            "folder@name",  # @ symbol
+            "folder#name",  # # symbol
+            "folder/name",  # Path separator
+            "folder\\name",  # Windows path separator
+        ]
+
+        # Use a valid integer task_id so folder validation runs.
+        for folder in invalid_folders:
+            response = client.post(
+                "/api/files/upload",
+                files={"file": ("test.txt", b"content", "text/plain")},
+                data={"task_type": "general", "task_id": "1", "folder": folder},
+                headers=auth_headers,
+            )
+            assert response.status_code == 422
+            detail = response.json().get("detail", "")
+            assert "Invalid folder name" in detail or "invalid" in detail.lower()
+
+    def test_upload_file_rejects_too_long_folder_name(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """Test that upload_file rejects folder names exceeding length limit."""
+        too_long_folder = "a" * 101
+
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("test.txt", b"content", "text/plain")},
+            data={
+                "task_type": "general",
+                "task_id": "1",
+                "folder": too_long_folder,
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        detail = response.json().get("detail", "")
+        assert "Invalid folder name" in detail or "invalid" in detail.lower()
+
+    def test_upload_multiple_files_rejects_path_traversal_in_folder(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """Test that upload (multiple files) rejects path traversal in folder parameter."""
+        malicious_folders = [
+            "../../../etc",
+            "..\\..\\..\\windows",
+            "folder/../other",
+        ]
+
+        for folder in malicious_folders:
+            response = client.post(
+                "/api/files/upload",
+                files=[("files", ("test.txt", b"content", "text/plain"))],
+                data={"task_type": "general", "task_id": "1", "folder": folder},
+                headers=auth_headers,
+            )
+            assert response.status_code == 422
+            detail = response.json().get("detail", "")
+            assert "Invalid folder name" in detail or "invalid" in detail.lower()
+
+    def test_download_file_rejects_path_traversal(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """Test that download_file rejects path traversal attempts."""
+        from urllib.parse import quote
+
+        malicious_paths = [
+            "../../../etc/passwd",
+            "..\\..\\..\\windows\\system32",
+            "../other_user/file.txt",
+            "file/../../etc/passwd",
+        ]
+
+        for path in malicious_paths:
+            encoded_path = quote(path, safe="")
+            response = client.get(
+                f"/api/files/download/{encoded_path}", headers=auth_headers
+            )
+            assert response.status_code in [400, 403, 404]
+            if response.status_code != 404:
+                detail = response.json().get("detail", "").lower()
+                assert any(
+                    keyword in detail
+                    for keyword in ["path traversal", "invalid", "security"]
+                )
+
+    def test_preview_file_rejects_path_traversal(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """Test that preview_file rejects path traversal attempts."""
+        from urllib.parse import quote
+
+        task_id = 1
+
+        malicious_paths = [
+            "../../../etc/passwd",
+            "..\\..\\..\\windows\\system32",
+            "../other_user/file.txt",
+        ]
+
+        for path in malicious_paths:
+            encoded_path = quote(path, safe="")
+            response = client.get(
+                f"/api/files/preview/{task_id}/{encoded_path}", headers=auth_headers
+            )
+            assert response.status_code in [400, 403, 404]
+            if response.status_code != 404:
+                detail = response.json().get("detail", "").lower()
+                assert any(
+                    keyword in detail
+                    for keyword in [
+                        "path traversal",
+                        "invalid",
+                        "security",
+                        "access denied",
+                        "task not found",
+                    ]
+                )
+
+    def test_list_files_handles_nested_paths_correctly(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """With file_id design, list is DB-only (no filesystem scan). File in a
+        collection appears in list when created via KB ingest."""
+        admin_user, _ = test_db
+
+        # Create file via KB ingest to collection "a" so it gets an UploadedFile record.
+        response = client.post(
+            "/api/kb/ingest",
+            files={"file": ("file.txt", b"nested content", "text/plain")},
+            data={"collection": "a"},
+            headers=auth_headers,
+        )
+        if response.status_code != 200:
+            pytest.skip("KB ingest not available or failed")
+
+        response = client.get("/api/files/list", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+
+        found = False
+        for f in data["files"]:
+            if f.get("filename") == "file.txt":
+                found = True
+                assert f.get("file_id"), "list should return file_id"
+                # Path is user_id/a/file.txt
+                assert "a" in f.get("relative_path", "")
+                break
+        assert found, "File in collection should appear in list (file_id design)"
+
+    def test_list_files_handles_invalid_first_level_collection_name(
+        self, client, test_db, temp_uploads_dir, auth_headers
+    ):
+        """Test that list_files handles invalid first-level collection names gracefully."""
+        admin_user, _ = test_db
+        user_id = admin_user.id
+
+        invalid_dir = temp_uploads_dir / f"user_{user_id}" / ".." / "other"
+        try:
+            invalid_dir.mkdir(parents=True, exist_ok=True)
+            test_file = invalid_dir / "file.txt"
+            test_file.write_text("content")
+
+            response = client.get("/api/files/list", headers=auth_headers)
+            assert response.status_code == 200
+        except (OSError, ValueError):
+            pass

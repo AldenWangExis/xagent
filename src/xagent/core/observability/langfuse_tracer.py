@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from importlib.metadata import version as get_version
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Union
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Union, cast
 
 from langfuse import Langfuse
 from packaging.version import Version
@@ -66,11 +66,14 @@ class LangfuseTracer:
                 else:
                     return self.langfuse.start_observation(name=name)
             else:
-                # v3 API - use getattr to avoid mypy errors with v4+ type stubs
+                # v3 API: call start_span (removed in v4). Cast to Any to keep mypy
+                # happy across langfuse versions without per-version ignores.
                 if parent_span:
-                    return getattr(parent_span, "start_span")(name=name)
+                    parent_any = cast(Any, parent_span)
+                    return getattr(parent_any, "start_span")(name=name)
                 else:
-                    return getattr(self.langfuse, "start_span")(name=name)
+                    langfuse_any = cast(Any, self.langfuse)
+                    return getattr(langfuse_any, "start_span")(name=name)
         return None
 
 

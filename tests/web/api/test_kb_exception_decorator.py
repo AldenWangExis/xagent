@@ -56,8 +56,8 @@ async def test_handle_kb_exceptions_maps_data_errors_to_400(
 @pytest.mark.parametrize(
     ("exc", "expected_status", "expected_prefix"),
     [
-        (PermissionError("nope"), 403, "文件系统错误:"),
-        (OSError("io"), 403, "文件系统错误:"),
+        (PermissionError("nope"), 403, "File system error:"),
+        (OSError("io"), 403, "File system error:"),
     ],
 )
 async def test_handle_kb_exceptions_maps_fs_errors_to_403(
