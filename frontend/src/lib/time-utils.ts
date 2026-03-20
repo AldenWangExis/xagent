@@ -4,6 +4,34 @@
  */
 
 /**
+ * Normalizes various timestamp formats (seconds, milliseconds, numeric strings, ISO strings)
+ * to a standard millisecond timestamp.
+ * @param ts The timestamp to normalize
+ * @returns Timestamp in milliseconds
+ */
+export function normalizeTimestampMs(ts?: string | number | Date | null): number {
+  if (!ts) return Date.now()
+  if (ts instanceof Date) return ts.getTime()
+
+  if (typeof ts === 'string') {
+    const num = Number(ts)
+    // If it's a valid number string (not empty), treat as numeric timestamp
+    if (!isNaN(num) && ts.trim() !== '') {
+      return num < 1e10 ? num * 1000 : num
+    }
+    // Otherwise try parsing as date string
+    const parsedMs = new Date(ts).getTime()
+    return isNaN(parsedMs) ? Date.now() : parsedMs
+  }
+
+  if (typeof ts === 'number') {
+    return ts < 1e10 ? ts * 1000 : ts
+  }
+
+  return Date.now()
+}
+
+/**
  * Format time to local time string
  * @param timestamp Timestamp (seconds or milliseconds) or ISO string
  * @param format Output format: 'time' | 'date' | 'datetime'
@@ -18,15 +46,7 @@ export function formatTime(
   }
 
   try {
-    let date: Date
-
-    if (typeof timestamp === 'number') {
-      // Automatically judge whether it is second-level or millisecond-level timestamp
-      // 10000000000 is approximately the year 2286, so less than this value is considered second-level
-      date = new Date(timestamp * (timestamp < 10000000000 ? 1000 : 1))
-    } else {
-      date = new Date(timestamp)
-    }
+    const date = new Date(normalizeTimestampMs(timestamp))
 
     if (isNaN(date.getTime())) {
       return String(timestamp)
@@ -62,20 +82,8 @@ export function getTimeDuration(
   }
 
   try {
-    let startDate: Date
-    let endDate: Date
-
-    if (typeof start === 'number') {
-      startDate = new Date(start * (start < 10000000000 ? 1000 : 1))
-    } else {
-      startDate = new Date(start)
-    }
-
-    if (typeof end === 'number') {
-      endDate = new Date(end * (end < 10000000000 ? 1000 : 1))
-    } else {
-      endDate = new Date(end)
-    }
+    const startDate = new Date(normalizeTimestampMs(start))
+    const endDate = new Date(normalizeTimestampMs(end))
 
     if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
       return 0

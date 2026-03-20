@@ -15,6 +15,7 @@ import { useApp } from '@/contexts/app-context-chat';
 import { useI18n } from '@/contexts/i18n-context';
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { normalizeTimestampMs } from '@/lib/time-utils';
 
 // Types
 interface ToolArgs {
@@ -150,7 +151,7 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
       }
 
       const step = stepsMap.get(stepId)!;
-      const timestamp = event.timestamp || Date.now();
+      const timestamp = normalizeTimestampMs(event.timestamp);
       const eventId = event.event_id || `event-${index}`;
 
       // Process different event types
@@ -284,7 +285,7 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
         step.status = 'completed';
         // Ensure all actions are completed
         step.actions.forEach(a => {
-            if (a.status === 'running') a.status = 'completed';
+          if (a.status === 'running') a.status = 'completed';
         });
       }
 
@@ -428,14 +429,14 @@ function StepActionItem({ action, onViewDetail, onOpenTerminal, onFileClick }: S
               content={action.data.reasoning}
               onFileClick={onFileClick}
               className="
-                text-sm text-muted-foreground leading-relaxed pl-3
+                text-sm text-muted-foreground leading-relaxed
                 prose-neutral dark:prose-invert max-w-none
                 [&>p]:mb-2 [&>p:last-child]:mb-0
               "
             />
           )}
           {action.status === 'failed' && action.data.error && (
-            <div className="text-red-400 text-sm pl-3 mt-1 whitespace-pre-wrap">
+            <div className="text-red-400 text-sm mt-1 whitespace-pre-wrap">
               {t('traceEventRenderer.errorLabel')}{String(action.data.error)}
             </div>
           )}
@@ -448,8 +449,10 @@ function StepActionItem({ action, onViewDetail, onOpenTerminal, onFileClick }: S
       <button
         onClick={handleToggle}
         className={cn(
-            "w-full flex items-center justify-between py-3 px-3 text-xs transition-colors rounded-md",
-            isRunning ? "bg-primary/5 text-primary" : "hover:bg-muted/50 text-muted-foreground/80 hover:text-foreground"
+            "w-full flex items-center justify-between py-3 px-3 text-xs transition-colors rounded-md border",
+            isRunning ? "bg-primary/10 border-primary/20 text-primary" :
+            isExpanded ? "bg-muted/50 border-border text-foreground" :
+            "bg-muted/50 border-transparent hover:bg-muted/60 text-muted-foreground/80 hover:text-foreground"
         )}
       >
         <span className="flex items-center gap-2 overflow-hidden">
@@ -471,7 +474,13 @@ function StepActionItem({ action, onViewDetail, onOpenTerminal, onFileClick }: S
         </span>
         <div className="flex items-center gap-2 flex-shrink-0">
             <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground/50">
-                {new Date(action.timestamp).toLocaleTimeString()}
+                {new Date(action.timestamp).toLocaleString([], {
+                    month: 'numeric',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                })}
             </span>
             {isExpanded ? <ChevronDown className="w-3 h-3 opacity-50" /> : <ChevronRight className="w-3 h-3 opacity-50" />}
         </div>
@@ -484,10 +493,11 @@ function StepActionItem({ action, onViewDetail, onOpenTerminal, onFileClick }: S
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
+            className="overflow-hidden"
           >
-             <ScrollArea ref={scrollRef} className="max-h-[200px] w-full mt-1 bg-muted/20 rounded-md overflow-auto">
+             <ScrollArea ref={scrollRef} className="max-h-[200px] w-full mt-1 bg-muted/30 border border-border/50 rounded-md overflow-auto">
                <div
-                 className="p-3 space-y-2 font-mono text-xs cursor-pointer hover:bg-white/5 transition-colors"
+                 className="p-3 space-y-2 font-mono text-xs cursor-pointer hover:bg-muted/50 transition-colors"
                  onClick={() => onViewDetail(action)}
                >
                  {action.type === 'tool' && (
@@ -574,20 +584,13 @@ function StepItem({ step, index, onOpenTerminal, onViewDetail, onFileClick }: St
         className="flex items-start gap-2 cursor-pointer group/step"
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        <div className={cn(
-          "flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center mt-0.5 transition-colors",
-          isCompleted ? "bg-green-500/20" :
-          isFailed ? "bg-red-500/20" :
-          "bg-primary/20"
-        )}>
-          {isCompleted ? (
-            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-          ) : isFailed ? (
-            <Info className="w-3.5 h-3.5 text-red-500" />
-          ) : (
-            <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
-          )}
-        </div>
+        {isCompleted ? (
+          <CheckCircle2 className="w-5 h-5 text-green-500" />
+        ) : isFailed ? (
+          <Info className="w-5 h-5 text-red-500" />
+        ) : (
+          <Loader2 className="w-5 h-5 text-primary animate-spin" />
+        )}
 
         <div className="flex-1 min-w-0 flex items-center gap-2">
           <h3 className="text-sm font-medium text-foreground">
@@ -610,9 +613,10 @@ function StepItem({ step, index, onOpenTerminal, onViewDetail, onFileClick }: St
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
+            className="overflow-hidden"
           >
               {/* Actions List (replaces nested Execution Details) */}
-              <div className="ml-2.5 pl-4 border-l-2 border-border/40 space-y-2">
+              <div className="ml-2.5 pl-6 border-l-2 border-border/40 space-y-2 pt-1 pb-2">
                 {step.actions.map((action) => (
                     <StepActionItem
                         key={action.id}

@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
-import { StandaloneFilePreviewDialog } from "@/components/standalone-file-preview-dialog"
+import { StandaloneFilePreviewDialog } from "@/components/file/standalone-file-preview-dialog"
 import { SearchInput } from "@/components/ui/search-input"
 import {
   Upload,

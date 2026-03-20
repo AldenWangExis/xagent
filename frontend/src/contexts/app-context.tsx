@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useState, useRef } from "react"
 import { FileText, Target, Zap, CheckCircle, XCircle, Clock, Wrench, Activity, Search, Lightbulb, AlertTriangle, Info, Brain, Bot, Sparkles } from "lucide-react"
 import { JsonRenderer } from "../components/ui/markdown-renderer"
-import { FileAttachment } from "../components/file-attachment"
+import { FileAttachment } from "@/components/file/file-attachment"
 import { ReplayScheduler } from '@/lib/replay-scheduler'
 import { CollapsibleSection } from "../components/collapsible-section"
 import { Badge } from "@/components/ui/badge"

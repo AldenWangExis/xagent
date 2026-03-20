@@ -1,14 +1,15 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { XIcon, Loader2, FileText, Download, ChevronLeft, ChevronRight, ExternalLink } from "lucide-react"
+import { FileText, ChevronLeft, ChevronRight } from "lucide-react"
 import { useApp } from "@/contexts/app-context"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
-import { DocxPreviewRenderer } from "@/components/docx-preview-renderer"
+import { FileViewer } from "@/components/file/file-viewer"
+import { FilePreviewActionButtons } from "@/components/file/file-preview-action-buttons"
 
 interface FilePreviewDialogProps {
   open: boolean
@@ -18,7 +19,7 @@ interface FilePreviewDialogProps {
 export function FilePreviewDialog({ open, onOpenChange }: FilePreviewDialogProps) {
   const { state, dispatch, switchFilePreview } = useApp()
   const { filePreview } = state
-  const { t } = useI18n()
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview')
 
   // Extract the base filename from filePath if fileName contains path separators
   // This ensures we use just "image.jpeg" not "web_task_235/output/image.jpeg"
@@ -112,28 +113,6 @@ export function FilePreviewDialog({ open, onOpenChange }: FilePreviewDialogProps
     }
   }, [open, filePreview.fileId, filePreview.content, filePreview.error, filePreview.fileName, dispatch])
 
-  // Convert relative paths in HTML to absolute paths
-  const processHtmlContent = (htmlContent: string, fileId: string) => {
-    if (!htmlContent || !fileId) return htmlContent
-
-    const apiUrl = getApiUrl()
-
-    // Replace relative paths for images, scripts, links, etc.
-    return htmlContent.replace(
-      /(src|href)=["']([^"']+)["']/g,
-      (match, attr, path) => {
-        // Skip if it's already an absolute URL, data URL, or has a protocol
-        if (path.match(/^(https?:\/|data:|\/\/|#)/)) {
-          return match
-        }
-
-        const newUrl = `${apiUrl}/api/files/public/preview/${encodeURIComponent(fileId)}?relative_path=${encodeURIComponent(path)}`
-
-        return `${attr}="${newUrl}"`
-      }
-    )
-  }
-
   const handleDownload = async () => {
     if (filePreview.fileId) {
       try {
@@ -222,27 +201,15 @@ export function FilePreviewDialog({ open, onOpenChange }: FilePreviewDialogProps
                 <FileText className="h-5 w-5" />
                 {filePreview.fileName}
               </DialogTitle>
-              <div className="flex items-center gap-2 mr-8">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleOpenInNewWindow}
-                  className="flex items-center gap-2"
-                  title={t('files.previewDialog.buttons.openInNewWindow')}
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  {t('files.previewDialog.buttons.openInNewWindow')}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDownload}
-                  className="flex items-center gap-2"
-                  title={t('files.previewDialog.buttons.download')}
-                >
-                  <Download className="h-4 w-4" />
-                  {t('files.previewDialog.buttons.download')}
-                </Button>
+              <div className="mr-8">
+                <FilePreviewActionButtons
+                  viewMode={viewMode}
+                  onViewModeChange={setViewMode}
+                  fileName={filePreview.fileName}
+                  onDownload={handleDownload}
+                  onOpenInNewWindow={handleOpenInNewWindow}
+                  showText={true}
+                />
               </div>
             </div>
 
@@ -291,72 +258,19 @@ export function FilePreviewDialog({ open, onOpenChange }: FilePreviewDialogProps
           </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-          {filePreview.isLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="flex flex-col items-center gap-2">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                <span className="text-sm text-muted-foreground">{t('files.previewDialog.loading')}</span>
-              </div>
-            </div>
-          ) : filePreview.error ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="flex flex-col items-center gap-2 text-center">
-                <XIcon className="h-8 w-8 text-destructive" />
-                <span className="text-sm text-muted-foreground">{filePreview.error}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 overflow-auto bg-muted/30 rounded border">
-              {/* PPTX files - display as converted HTML */}
-              {filePreview.fileName.toLowerCase().endsWith('.pptx') || filePreview.fileName.toLowerCase().endsWith('.ppt') ? (
-                <iframe
-                  srcDoc={filePreview.content || ''}
-                  className="w-full h-full border-0"
-                  sandbox="allow-same-origin allow-scripts"
-                  title={filePreview.fileName}
-                />
-              ) : filePreview.fileName.toLowerCase().endsWith('.docx') ? (
-                <DocxPreviewRenderer base64Content={filePreview.content || ''} />
-              ) : filePreview.fileName.endsWith('.html') || filePreview.fileName.endsWith('.htm') ? (
-                <iframe
-                  srcDoc={processHtmlContent(filePreview.content, filePreview.fileId)}
-                  className="w-full h-full border-0"
-                  sandbox="allow-same-origin allow-scripts"
-                  title={filePreview.fileName}
-                />
-              ) : filePreview.fileName.toLowerCase().endsWith('.pdf') ? (
-                <div className="flex items-center justify-center h-full p-4">
-                  <iframe
-                    src={`data:application/pdf;base64,${filePreview.content || ''}`}
-                    className="w-full h-full border-0"
-                    title={filePreview.fileName}
-                  />
-                </div>
-              ) : baseFileName.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) ? (
-                <div className="flex items-center justify-center h-full p-4">
-                  <img
-                    src={`data:image/${baseFileName.split('.').pop()};base64,${filePreview.content || ''}`}
-                    alt={baseFileName}
-                    className="max-w-full max-h-full object-contain"
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none'
-                      const fallback = e.currentTarget.nextElementSibling as HTMLElement
-                      if (fallback) fallback.style.display = 'flex'
-                    }}
-                  />
-                  <div className="hidden flex-col items-center justify-center h-full text-muted-foreground">
-                    <span>{t('files.previewDialog.imageError.title')}</span>
-                    <span className="text-sm">{t('files.previewDialog.imageError.hint')}</span>
-                  </div>
-                </div>
-              ) : (
-                <pre className="p-4 text-sm font-mono whitespace-pre-wrap break-words">
-                  {filePreview.content || t('files.previewDialog.emptyContent')}
-                </pre>
-              )}
-            </div>
-          )}
+        {/* Main content area with scroll */}
+        <div className="flex-1 overflow-auto bg-muted/30 p-4">
+          <div className="max-w-4xl mx-auto h-full bg-background rounded shadow-sm border overflow-hidden min-h-[600px]">
+            <FileViewer
+              fileName={filePreview.fileName}
+              fileId={filePreview.fileId}
+              content={filePreview.content}
+              mimeType={filePreview.mimeType}
+              isLoading={filePreview.isLoading}
+              error={filePreview.error}
+              viewMode={viewMode}
+            />
+          </div>
         </div>
       </DialogContent>
     </Dialog>

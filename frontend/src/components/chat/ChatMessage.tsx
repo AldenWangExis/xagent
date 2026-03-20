@@ -1,9 +1,11 @@
-import { Bot } from "lucide-react";
+import React, { useState, useRef, useEffect } from "react";
+import { Bot, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TraceEventRenderer } from "./TraceEventRenderer";
 import { useI18n } from "@/contexts/i18n-context";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
-import type React from "react";
+import { Button } from "@/components/ui/button";
+import { normalizeTimestampMs } from "@/lib/time-utils";
 
 interface ToolArgs {
   code?: string;
@@ -56,10 +58,12 @@ interface TraceEvent {
 export interface ChatMessageProps {
   role: "user" | "assistant" | "system";
   content: React.ReactNode;
+  rawContent?: string;
   traceEvents?: TraceEvent[];
   showProcessView?: boolean;
   isVirtual?: boolean;
   taskStatus?: string;
+  timestamp?: number | string;
 }
 
 function GeneratingIndicator({latestTitle, taskStatus, errorMessage}: {latestTitle?: string, taskStatus?: string, errorMessage?: string}) {
@@ -119,15 +123,94 @@ function GeneratingIndicator({latestTitle, taskStatus, errorMessage}: {latestTit
   );
 }
 
+function ExpandableMessage({ content }: { content: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
+
+  useEffect(() => {
+    if (contentRef.current) {
+      setIsOverflowing(contentRef.current.scrollHeight > 240);
+    }
+  }, [content]);
+
+  return (
+    <div className="relative">
+      <div
+        ref={contentRef}
+        className={cn(
+          "text-sm leading-relaxed whitespace-pre-wrap transition-all duration-300",
+          !isExpanded && "max-h-[240px] overflow-hidden"
+        )}
+      >
+        {content}
+      </div>
+      {isOverflowing && !isExpanded && (
+        <>
+          <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-secondary to-transparent pointer-events-none" />
+          <div className="absolute bottom-1 left-1/2 -translate-x-1/2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-3 rounded-full shadow-sm bg-background hover:bg-accent text-xs text-foreground border"
+              onClick={() => setIsExpanded(true)}
+            >
+              <ChevronDown className="w-3.5 h-3.5 mr-1" />
+              {t("common.expand")}
+            </Button>
+          </div>
+        </>
+      )}
+      {isOverflowing && isExpanded && (
+        <div className="mt-3 flex justify-center">
+           <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-3 rounded-full shadow-sm bg-background hover:bg-accent text-xs text-foreground border"
+              onClick={() => setIsExpanded(false)}
+            >
+              <ChevronUp className="w-3.5 h-3.5 mr-1" />
+              {t("common.collapse")}
+            </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ChatMessage({
   role,
   content,
+  rawContent,
   traceEvents,
   showProcessView,
   taskStatus,
+  timestamp,
 }: ChatMessageProps) {
-  const isUser = role === "user";
   const { t } = useI18n();
+  const isUser = role === "user";
+  const [copied, setCopied] = useState(false);
+
+  const copyableContent = typeof content === "string" ? content : rawContent;
+
+  const handleCopy = () => {
+    if (copyableContent) {
+      navigator.clipboard.writeText(copyableContent);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const formattedTime = timestamp
+    ? new Date(normalizeTimestampMs(timestamp)).toLocaleString([], {
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      })
+    : "";
 
   const shouldShowProcess =
     !!showProcessView &&
@@ -160,7 +243,7 @@ export function ChatMessage({
   }
 
   return (
-    <div className="w-full space-y-2 animate-fade-in">
+    <div className="w-full space-y-2 animate-fade-in group">
       {shouldShowProcess && !isUser && (
         <div className={cn("pl-7")}>
           <TraceEventRenderer events={traceEvents} />
@@ -177,7 +260,7 @@ export function ChatMessage({
           className={cn(
             "flex gap-4 transition-all duration-300",
             isUser
-              ? "bg-slate-100 text-slate-700 p-3 rounded-2xl flex-row-reverse items-center"
+              ? "bg-secondary text-secondary-foreground p-3 rounded-2xl flex-row-reverse items-center"
               : "bg-transparent p-0 w-full"
           )}
         >
@@ -197,12 +280,7 @@ export function ChatMessage({
             {content ? (
               typeof content === "string" ? (
                 isUser ? (
-                  <p className={cn(
-                    "text-sm leading-relaxed whitespace-pre-wrap",
-                    "max-h-60 overflow-y-auto"
-                  )}>
-                    {content}
-                  </p>
+                  <ExpandableMessage content={content} />
                 ) : (
                   <MarkdownRenderer
                     content={content}
@@ -218,6 +296,29 @@ export function ChatMessage({
           </div>
         </div>
       </div>
+
+      {/* Action Row */}
+      {copyableContent && (
+        <div
+          className={cn(
+            "flex items-center gap-1.5 text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity duration-200",
+            isUser ? "justify-end mr-1" : "justify-start ml-14"
+          )}
+        >
+          <button
+            onClick={handleCopy}
+            className="hover:text-foreground flex items-center justify-center p-1 rounded-md hover:bg-muted/50 transition-colors"
+            title={t("common.copy") || "Copy"}
+          >
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-green-500" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
+            )}
+          </button>
+          {formattedTime && <span>{formattedTime}</span>}
+        </div>
+      )}
     </div>
   );
 }

@@ -53,46 +53,33 @@ export function ChatStartScreen({
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[80vh] py-16 text-center">
-      <div className="relative mb-6">
-        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[hsl(var(--gradient-from))]/20 to-[hsl(var(--gradient-to))]/10 flex items-center justify-center animate-float">
-          {typeof icon === 'string' ? (
-            <img
-              src={icon}
-              alt={title}
-              className="w-10 h-10 rounded-lg object-cover"
-            />
-          ) : (
-            icon || <Bot className="w-10 h-10 text-[hsl(var(--gradient-from))]" />
-          )}
-        </div>
-        <div className="absolute -inset-4 rounded-3xl bg-gradient-to-br from-primary/5 via-accent/5 to-transparent blur-xl -z-10" />
-      </div>
-      <h2 className="text-2xl font-bold mb-2 gradient-text">
+      <h2 className="text-3xl font-semibold mb-3 text-foreground">
         {title}
       </h2>
       {description && (
-        <p className="text-xs text-muted-foreground/70 mb-8 max-w-md">{description}</p>
+        <p className="text-base text-muted-foreground mb-10 max-w-md">{description}</p>
       )}
 
-      <div className="w-full max-w-4xl mx-auto space-y-8">
-        <ChatInput
-          onSend={(msg, config) => onSend(msg, files, config)}
-          isLoading={isSending}
-          files={files}
-          onFilesChange={onFilesChange || (() => {})}
-          showModeToggle={showModeToggle}
-          inputValue={inputValue}
-          onInputChange={onInputChange}
-          readOnlyConfig={readOnlyConfig}
-          taskConfig={taskConfig}
-        />
+      <div className="w-full max-w-3xl mx-auto space-y-8">
+        <div className="space-y-4">
+          <ChatInput
+            onSend={(msg, config) => onSend(msg, files, config)}
+            isLoading={isSending}
+            files={files}
+            onFilesChange={onFilesChange || (() => {})}
+            showModeToggle={showModeToggle}
+            inputValue={inputValue}
+            onInputChange={onInputChange}
+            readOnlyConfig={readOnlyConfig}
+            taskConfig={taskConfig}
+          />
+          <div className="text-xs text-muted-foreground/60 text-center">
+            {t("chatPage.input.hintEnter")} · {t("chatPage.input.hintAt")}
+          </div>
+        </div>
 
         {prompts && prompts.length > 0 && (
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground/80 px-1">
-              <Sparkles className="w-4 h-4" />
-              <span>{t("chatPage.page.startWith")}</span>
-            </div>
+          <div className="space-y-4 pt-4">
             <div className={`grid grid-cols-1 sm:grid-cols-2 ${prompts.length <= 3 ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-4`}>
               {prompts.map((item, index) => {
                 const isString = typeof item === 'string';
@@ -103,9 +90,9 @@ export function ChatStartScreen({
                       <div
                         key={index}
                         onClick={() => handlePromptClick(promptText)}
-                        className="group relative p-4 h-24 rounded-xl border border-border/40 bg-card/30 hover:bg-card hover:border-primary/50 cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:shadow-lg flex flex-col justify-center text-left"
+                        className="group relative p-4 h-28 rounded-xl border border-border bg-card hover:bg-muted/50 cursor-pointer transition-all duration-300 flex flex-col justify-center text-left"
                       >
-                        <p className="text-sm text-foreground/90 line-clamp-2">{promptText}</p>
+                        <p className="text-sm text-foreground/90 line-clamp-3">{promptText}</p>
                       </div>
                    );
                 }
@@ -115,15 +102,12 @@ export function ChatStartScreen({
                     <div
                       key={index}
                       onClick={() => handlePromptClick(promptText)}
-                      className="group relative p-4 h-32 rounded-xl border border-border/40 bg-card/30 hover:bg-card hover:border-primary/50 cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:shadow-lg flex flex-col justify-between items-start text-left"
+                      className="group relative p-4 h-28 rounded-xl border border-border bg-card hover:bg-muted/50 cursor-pointer transition-all duration-300 flex flex-col justify-center items-start text-left gap-3"
                     >
-                      <div className={`w-10 h-10 rounded-lg ${item.bg} flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                        {item.icon && <item.icon className={`w-5 h-5 ${item.color}`} />}
+                      <div className="flex items-center justify-center">
+                        {item.icon && <item.icon className="w-5 h-5 text-muted-foreground" />}
                       </div>
-                      <div>
-                        <h3 className="font-medium text-sm text-foreground/90">{item.title}</h3>
-                        <p className="text-xs text-muted-foreground/70 mt-1">{item.description}</p>
-                      </div>
+                      <h3 className="font-medium text-sm text-foreground/90 leading-tight">{item.title}</h3>
                     </div>
                 );
               })}

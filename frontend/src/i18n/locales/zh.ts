@@ -17,7 +17,11 @@ const zh = {
     planning: "正在制定计划",
     taskPaused: "任务已暂停",
     noData: "暂无数据",
+    code: "代码",
+    preview: "预览",
     refresh: "刷新",
+    expand: "展开",
+    collapse: "收起",
     noOptions: "暂无选项",
     errors: {
       unknown: "未知错误",
@@ -51,35 +55,36 @@ const zh = {
   },
   chatPage: {
     page: {
-      emptyTitle: "描述目标，{appName} 会完成剩下的事",
-      emptyDescription: "将您的想法自动转化为可运作的智能体。只需描述您的需求，即可快速启动",
+      emptyTitle: "我可以帮您做些什么？",
+      emptyDescription: "描述您的目标，{appName} 会完成剩下的事。",
       startWith: "你可以从这里开始",
     },
     cards: {
       createPPT: {
-        title: "制作 PPT",
+        title: "根据报告生成一个 PPT",
         description: "销售报告，幻灯片",
-        prompt: "为 Q3 电商销售分析制作 PPT"
+        prompt: "根据报告生成一个 PPT"
       },
       dataAnalysis: {
-        title: "数据分析",
+        title: "分析数据集",
         description: "趋势，反馈",
-        prompt: "分析客户反馈数据并总结趋势"
+        prompt: "分析数据集"
       },
       designPoster: {
-        title: "设计海报",
+        title: "设计一张营销海报",
         description: "社交媒体素材",
-        prompt: "为即将到来的技术会议设计海报"
+        prompt: "设计一张营销海报"
       },
       automatic: {
-        title: "自动化",
+        title: "自动化一个工作流程",
         description: "自定义工作流",
-        prompt: "构建一个自动邮件处理工作流"
+        prompt: "自动化一个工作流程"
       }
     },
     input: {
       placeholder: "描述您的任务...",
       hintEnter: "按 Enter 发送",
+      hintAt: "输入 @ 引用文件",
       processing: "处理中",
       actions: {
         config: "配置模型",

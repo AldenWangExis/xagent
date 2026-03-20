@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
-import { XIcon, Loader2, FileText, Download, Eye } from "lucide-react"
+import { FileText } from "lucide-react"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
-import { DocxPreviewRenderer } from "@/components/docx-preview-renderer"
+import { FileViewer } from "@/components/file/file-viewer"
+import { FilePreviewActionButtons } from "@/components/file/file-preview-action-buttons"
 
 interface StandaloneFilePreviewDialogProps {
   open: boolean
@@ -25,6 +25,7 @@ export function StandaloneFilePreviewDialog({
   const [content, setContent] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview')
   const { t } = useI18n()
 
   // Load file content when dialog opens
@@ -82,27 +83,6 @@ export function StandaloneFilePreviewDialog({
     }
   }, [open, fileId, content, error, t])
 
-  const processHtmlContent = (htmlContent: string, currentFileId: string) => {
-    if (!htmlContent || !currentFileId) return htmlContent
-
-    const apiUrl = getApiUrl()
-
-    // Replace relative paths for images, scripts, links, etc.
-    return htmlContent.replace(
-      /(src|href)=["']([^"']+)["']/g,
-      (match, attr, path) => {
-        // Skip if it's already an absolute URL, data URL, or has a protocol
-        if (path.match(/^(https?:\/|data:|\/\/|#)/)) {
-          return match
-        }
-
-        const newUrl = `${apiUrl}/api/files/public/preview/${encodeURIComponent(currentFileId)}?relative_path=${encodeURIComponent(path)}`
-
-        return `${attr}="${newUrl}"`
-      }
-    )
-  }
-
   const handleDownload = async () => {
     if (fileId) {
       try {
@@ -159,76 +139,32 @@ export function StandaloneFilePreviewDialog({
       >
         <DialogHeader className="flex-shrink-0 bg-background/80 backdrop-blur-sm border-b p-4">
           <div className="flex items-center justify-between">
-            <DialogTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              {fileName}
-            </DialogTitle>
-            <div className="flex items-center gap-2 mr-8">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleDownload}
-                className="flex items-center gap-2"
-                title={t('files.previewDialog.buttons.download')}
-                aria-label={t('files.previewDialog.buttons.download')}
-              >
-                <Download className="h-4 w-4" />
-                {t('files.previewDialog.buttons.download')}
-              </Button>
+              <DialogTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                {fileName}
+              </DialogTitle>
+              <div className="mr-8">
+                <FilePreviewActionButtons
+                  viewMode={viewMode}
+                  onViewModeChange={setViewMode}
+                  fileName={fileName}
+                  onDownload={handleDownload}
+                  showText={true}
+                />
+              </div>
             </div>
-          </div>
-        </DialogHeader>
+          </DialogHeader>
 
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-          {isLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="flex flex-col items-center gap-2">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                <span className="text-sm text-muted-foreground">{t('files.previewDialog.loading')}</span>
-              </div>
-            </div>
-          ) : error ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="flex flex-col items-center gap-2 text-center">
-                <XIcon className="h-8 w-8 text-destructive" />
-                <span className="text-sm text-muted-foreground">{error}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 overflow-auto bg-muted/30 rounded border">
-              {fileName.toLowerCase().endsWith('.docx') ? (
-                <DocxPreviewRenderer base64Content={content || ''} />
-              ) : fileName.endsWith('.html') || fileName.endsWith('.htm') ? (
-                <iframe
-                  srcDoc={processHtmlContent(content, fileId)}
-                  className="w-full h-full border-0"
-                  sandbox="allow-same-origin allow-scripts"
-                  title={fileName}
-                />
-              ) : fileName.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) ? (
-                <div className="flex items-center justify-center h-full p-4">
-                  <img
-                    src={`data:image/${fileName.split('.').pop()};base64,${content || ''}`}
-                    alt={fileName}
-                    className="max-w-full max-h-full object-contain"
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none'
-                      const fallback = e.currentTarget.nextElementSibling as HTMLElement
-                      if (fallback) fallback.style.display = 'flex'
-                    }}
-                  />
-                  <div className="hidden flex-col items-center justify-center h-full text-muted-foreground">
-                    <span>{t('files.previewDialog.imageError.title')}</span>
-                    <span className="text-sm">{t('files.previewDialog.imageError.hint')}</span>
-                  </div>
-                </div>
-              ) : (
-                <pre className="p-4 text-sm font-mono whitespace-pre-wrap break-words">
-                  {content || t('files.previewDialog.emptyContent')}
-                </pre>
-              )}
-            </div>
-          )}
+          <FileViewer
+            fileName={fileName}
+            fileId={fileId}
+            content={content}
+            mimeType={undefined}
+            isLoading={isLoading}
+            error={error}
+            viewMode={viewMode}
+          />
         </div>
       </DialogContent>
     </Dialog>

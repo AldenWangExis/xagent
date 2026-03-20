@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Send, Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2 } from "lucide-react";
+import { Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2, ArrowUp, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn, getApiUrl } from "@/lib/utils";
@@ -529,17 +529,12 @@ export function ChatInput({
         <form
           onSubmit={handleSubmit}
         className={cn(
-          "relative rounded-2xl bg-card overflow-hidden transition-all duration-300 border-2 shadow-lg",
+          "relative rounded-2xl bg-card overflow-hidden transition-all duration-300 border",
           isFocused
-            ? "border-primary/50 glow-sm shadow-xl"
-            : "border-border/50 hover:border-border"
+            ? "border-primary/50 shadow-md"
+            : "border-border shadow-sm hover:border-border/80"
         )}
       >
-        {/* Gradient accent line */}
-        <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r via-accent opacity-0 transition-opacity duration-300"
-          style={{ opacity: isFocused ? 1 : 0 }}
-        />
-
         <Textarea
           ref={textareaRef}
           value={message}
@@ -555,12 +550,12 @@ export function ChatInput({
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           placeholder={t("chatPage.input.placeholder")}
-          className="min-h-[130px] max-h-[300px] resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 pb-14 text-[15px] placeholder:text-muted-foreground/60"
+          className="min-h-[130px] max-h-[300px] resize-none border-0 bg-transparent dark:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 pb-14 text-[15px] placeholder:text-muted-foreground/60"
           disabled={isLoading || !!downloadingFile}
         />
 
         {/* Bottom toolbar */}
-        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4 py-3 bg-gradient-to-t from-card via-card to-transparent">
+        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4 py-3 bg-card">
           <div className="flex items-center gap-2">
             {/* Settings button - left of upload */}
             {!hideConfig && (
@@ -570,10 +565,11 @@ export function ChatInput({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-9 px-3 text-muted-foreground rounded-xl gap-2 cursor-default"
+                    className="h-9 px-3 text-muted-foreground rounded-xl gap-2 cursor-default hover:bg-transparent"
                     disabled={true}
                     title={models.find(m => m.model_id === agentConfig.model)?.model_name || agentConfig.model || t("chatPage.input.noModel")}
                   >
+                    <Globe className="h-4 w-4" />
                     <span className="text-xs font-normal max-w-[150px] truncate hidden sm:inline-block">
                       {models.find(m => m.model_id === agentConfig.model)?.model_name || agentConfig.model || t("chatPage.input.noModel")}
                     </span>
@@ -591,6 +587,7 @@ export function ChatInput({
                         disabled={isLoading}
                         title={t('agent.input.actions.config')}
                       >
+                        <Globe className="h-4 w-4" />
                         <span className="text-xs font-normal max-w-[150px] truncate hidden sm:inline-block">
                           {models.find(m => m.model_id === agentConfig.model)?.model_name || agentConfig.model || t("chatPage.input.noModel")}
                         </span>
@@ -613,7 +610,7 @@ export function ChatInput({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-9 px-3 text-muted-foreground hover:text-foreground hover:bg-secondary/80 rounded-xl gap-2"
+              className="h-9 w-9 p-0 text-muted-foreground hover:text-foreground hover:bg-secondary/80 rounded-full"
               onClick={() => fileInputRef.current?.click()}
               disabled={isLoading}
               title={t("chatPage.input.actions.upload")}
@@ -623,49 +620,38 @@ export function ChatInput({
           </div>
 
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground/70 hidden sm:inline">
-              {t("chatPage.input.hintEnter")}
-            </span>
             {taskStatus === 'running' ? (
               <Button
                 type="button"
-                size="sm"
+                size="icon"
                 onClick={onPause}
-                className="h-9 px-4 rounded-xl gap-2 font-medium transition-all duration-300 bg-yellow-500 hover:bg-yellow-600 text-white"
+                className="h-8 w-8 rounded-full transition-all duration-300 bg-yellow-500 hover:bg-yellow-600 text-white"
               >
                 <Pause className="h-4 w-4" />
-                <span className="hidden sm:inline">{t("common.pause")}</span>
               </Button>
             ) : taskStatus === 'paused' ? (
               <Button
                 type="button"
-                size="sm"
+                size="icon"
                 onClick={onResume}
-                className="h-9 px-4 rounded-xl gap-2 font-medium transition-all duration-300 bg-green-500 hover:bg-green-600 text-white"
+                className="h-8 w-8 rounded-full transition-all duration-300 bg-green-500 hover:bg-green-600 text-white"
               >
                 <Play className="h-4 w-4" />
-                <span className="hidden sm:inline">{t("common.resume")}</span>
               </Button>
             ) : (
               <Button
                 type="submit"
-                size="sm"
+                size="icon"
                 disabled={!canSubmit()}
                 className={cn(
-                  "h-9 px-4 rounded-xl gap-2 font-medium transition-all duration-300",
-                  canSubmit() ? "bg-gradient-to-r from-primary hover:opacity-90 glow-sm" : ""
+                  "h-8 w-8 rounded-lg transition-all duration-300",
+                  !canSubmit() && "bg-muted text-muted-foreground/50"
                 )}
               >
                 {isLoading ? (
-                  <>
-                    <Sparkles className="h-4 w-4 animate-pulse" />
-                    <span className="hidden sm:inline">{t("chatPage.input.processing")}</span>
-                  </>
+                  <Sparkles className="h-4 w-4 animate-pulse" />
                 ) : (
-                  <>
-                    <Send className="h-4 w-4" />
-                    <span className="hidden sm:inline">{t("common.send")}</span>
-                  </>
+                  <ArrowUp className="h-4 w-4" />
                 )}
               </Button>
             )}

@@ -4,9 +4,9 @@ import React, { createContext, useContext, useReducer, useCallback, useEffect, u
 import { useRouter } from "next/navigation"
 import { FileText, Target, Zap, CheckCircle, XCircle, Wrench, Activity, Search, Lightbulb, AlertTriangle, Info, Brain, Bot } from "lucide-react"
 import { JsonRenderer, MarkdownRenderer } from "../components/ui/markdown-renderer"
-import { FileAttachment } from "../components/file-attachment"
+import { FileAttachment } from "@/components/file/file-attachment"
 import { ReplayScheduler } from '@/lib/replay-scheduler'
-import { CollapsibleSection } from "../components/collapsible-section"
+import { CollapsibleSection } from "@/components/collapsible-section"
 import { Badge } from "@/components/ui/badge"
 import { ClarificationForm } from "@/components/chat/clarification-form"
 
@@ -37,6 +37,7 @@ import { useAuth } from "@/contexts/auth-context"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
+import { normalizeTimestampMs } from "@/lib/time-utils"
 
 // Unique ID generator for messages
 let messageIdCounter = 0
@@ -223,6 +224,7 @@ interface Message {
   id: string
   role: "user" | "assistant"
   content: string | React.ReactNode
+  rawContent?: string
   timestamp: string
   status?: "pending" | "running" | "completed" | "failed"
   isResult?: boolean
@@ -300,6 +302,7 @@ interface AppState {
     // Support switching between multiple file previews
     availableFiles: Array<{ fileId: string; fileName: string }>
     currentIndex: number
+    viewMode: 'preview' | 'code'
   }
   isReplaying: boolean
   replaySpeed: number
@@ -343,6 +346,7 @@ type AppAction =
   | { type: "SWITCH_FILE_PREVIEW"; payload: { fileId: string; fileName: string; index: number } }
   | { type: "SET_FILE_PREVIEW_CONTENT"; payload: { content: string; mimeType?: string; error: string | null } }
   | { type: "SET_FILE_PREVIEW_LOADING"; payload: boolean }
+  | { type: "SET_FILE_PREVIEW_MODE"; payload: 'preview' | 'code' }
   | { type: "START_REPLAY"; payload: { taskId: number; events: TraceEvent[] } }
   | { type: "STOP_REPLAY" }
   | { type: "SET_PLAN_MEMORY_INFO"; payload: AppState["planMemoryInfo"] }
@@ -375,6 +379,7 @@ const initialState: AppState = {
     error: null,
     availableFiles: [],
     currentIndex: 0,
+    viewMode: 'preview',
   },
   isReplaying: false,
   replaySpeed: 1.0,
@@ -431,9 +436,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
       const updatedMessages = [...state.messages, messageToAdd]
       updatedMessages.sort((a, b) => {
-        const timeA = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime()
-        const timeB = typeof b.timestamp === 'number' ? b.timestamp : new Date(b.timestamp).getTime()
-        return timeA - timeB
+        return normalizeTimestampMs(a.timestamp) - normalizeTimestampMs(b.timestamp)
       })
       return { ...state, messages: updatedMessages, traceEvents: newTraceEvents }
     }
@@ -565,6 +568,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
           error: null,
           availableFiles: files,
           currentIndex: currentIndex,
+          viewMode: 'preview',
         }
       }
 
@@ -589,6 +593,16 @@ function appReducer(state: AppState, action: AppAction): AppState {
           isLoading: true,
           error: null,
           currentIndex: action.payload.index,
+          viewMode: 'preview',
+        }
+      }
+
+    case "SET_FILE_PREVIEW_MODE":
+      return {
+        ...state,
+        filePreview: {
+          ...state.filePreview,
+          viewMode: action.payload,
         }
       }
 
@@ -2244,6 +2258,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                     id: generateMessageId("msg-task-result"),
                     role: "assistant",
                     content: resultContent,
+                    rawContent: typeof finalOutput === 'string' ? finalOutput : JSON.stringify(finalOutput, null, 2),
                     timestamp: message.timestamp,
                     status: success ? "completed" : "failed",
                     isResult: true,

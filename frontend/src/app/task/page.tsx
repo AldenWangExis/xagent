@@ -68,8 +68,8 @@ function TaskHomePageContent() {
       <div className="flex-1 overflow-y-auto">
         <main className="container max-w-4xl mx-auto px-4 py-8">
           <ChatStartScreen
-            title={t("chatPage.page.emptyTitle", { appName: process.env.NEXT_PUBLIC_APP_NAME || "Xagent" })}
-            description={t("chatPage.page.emptyDescription")}
+            title={t("chatPage.page.emptyTitle")}
+            description={t("chatPage.page.emptyDescription", { appName: process.env.NEXT_PUBLIC_APP_NAME || "Xagent" })}
             icon={<Bot className="w-10 h-10 text-[hsl(var(--gradient-from))]" />}
             prompts={samplePrompts}
             onSend={handleSend}

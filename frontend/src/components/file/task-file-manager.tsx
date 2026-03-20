@@ -105,7 +105,6 @@ export function TaskFileManager({ taskId, children, onPreview }: TaskFileManager
             key={index}
             className="flex items-center justify-between p-2 rounded-lg hover:bg-accent/50 transition-all group cursor-pointer"
             onClick={() => {
-              setIsOpen(false)
               onPreview(file.file_id, file.filename)
             }}
           >
@@ -139,7 +138,10 @@ export function TaskFileManager({ taskId, children, onPreview }: TaskFileManager
       <PopoverTrigger asChild>
         {children}
       </PopoverTrigger>
-      <PopoverContent className="w-[400px] p-0" align="start">
+      <PopoverContent
+        className="w-[400px] p-0"
+        align="start"
+      >
         <div className="flex items-center justify-between p-3 border-b bg-muted/20">
           <h3 className="font-medium text-sm flex items-center gap-2">
             {t('files.header.title')}

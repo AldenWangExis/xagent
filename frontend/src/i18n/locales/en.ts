@@ -17,7 +17,11 @@ const en = {
     planning: "Formulating Plan",
     taskPaused: "Task Paused",
     noData: "No Data",
+    code: "Code",
+    preview: "Preview",
     refresh: "Refresh",
+    expand: "Expand",
+    collapse: "Collapse",
     noOptions: "No options available",
     errors: {
       unknown: "Unknown error",
@@ -51,35 +55,36 @@ const en = {
   },
   chatPage: {
     page: {
-      emptyTitle: "Describe the goal, {appName} will handle the rest",
-      emptyDescription: "Turn your ideas into working agents automatically. Just describe what you need to get started",
+      emptyTitle: "What can I help you with?",
+      emptyDescription: "Describe your goal and {appName} will handle the rest.",
       startWith: "You can start with",
     },
     cards: {
       createPPT: {
-        title: "Create PPT",
+        title: "Generate a PPT from a report",
         description: "Sales reports, slides",
-        prompt: "Create a PPT for Q3 E-commerce sales analysis"
+        prompt: "Generate a PPT from a report"
       },
       dataAnalysis: {
-        title: "Data Analysis",
+        title: "Analyze a dataset",
         description: "Trends, feedback",
-        prompt: "Analyze customer feedback data and summarize trends"
+        prompt: "Analyze a dataset"
       },
       designPoster: {
-        title: "Design Poster",
+        title: "Design a marketing poster",
         description: "Social media assets",
-        prompt: "Design a poster for the upcoming tech conference"
+        prompt: "Design a marketing poster"
       },
       automatic: {
-        title: "Automatic",
+        title: "Automate a workflow",
         description: "Custom workflows",
-        prompt: "Build an automatic email processing workflow"
+        prompt: "Automate a workflow"
       }
     },
     input: {
       placeholder: "Describe your task...",
       hintEnter: "Press Enter to send",
+      hintAt: "Input @ to reference files",
       processing: "Processing",
       actions: {
         config: "Configure Model",

@@ -123,3 +123,18 @@ export function truncateText(text: string, maxLength: number): string {
 export function sanitizeFileName(fileName: string): string {
   return fileName.replace(/[^\w\s.-]/g, '').replace(/\s+/g, '_')
 }
+
+export function isHtmlFile(fileName: string): boolean {
+  if (!fileName) return false
+  const lowerName = fileName.toLowerCase()
+  return lowerName.endsWith('.html') || lowerName.endsWith('.htm')
+}
+
+export function isMarkdownFile(fileName: string): boolean {
+  if (!fileName) return false
+  return fileName.toLowerCase().endsWith('.md')
+}
+
+export function isToggleableFile(fileName: string): boolean {
+  return isHtmlFile(fileName) || isMarkdownFile(fileName)
+}

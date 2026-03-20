@@ -33,6 +33,10 @@ import {
   CheckCircle2,
   XCircle,
   PauseCircle,
+  Bot,
+  BookOpen,
+  Box,
+  LayoutTemplate,
   Info,
   Tag,
   Github,
@@ -96,21 +100,21 @@ const navigationGroups: NavigationGroup[] = [
         name: "Task",
         nameKey: "nav.task",
         href: "/task",
-        icon: Sparkles,
+        icon: MessageSquare,
         color: "text-blue-500"
       },
       {
-        name: "BUILD",
+        name: "Agents",
         nameKey: "nav.build",
         href: "/build",
-        icon: Zap,
+        icon: Bot,
         color: "text-yellow-400"
       },
       {
         name: "Templates",
         nameKey: "nav.templates",
         href: "/templates",
-        icon: Layers,
+        icon: LayoutTemplate,
         color: "text-purple-400"
       },
     ]
@@ -123,21 +127,21 @@ const navigationGroups: NavigationGroup[] = [
         name: "Knowledge Base",
         nameKey: "nav.knowledgeBase",
         href: "/kb",
-        icon: Brain,
+        icon: BookOpen,
         color: "text-gray-500"
       },
       {
         name: "Models",
         nameKey: "nav.models",
         href: "/models",
-        icon: Server,
+        icon: Box,
         color: "text-gray-500"
       },
       {
         name: "Memory",
         nameKey: "nav.memory",
         href: "/memory",
-        icon: HardDrive,
+        icon: Brain,
         color: "text-gray-500"
       }
     ]
@@ -224,6 +228,15 @@ export function Sidebar({ className }: SidebarProps) {
       if (response.ok) {
         setTasks(prev => prev.filter(task => task.task_id !== taskId))
 
+        // Clean up refs and state
+        taskStatusRef.current.delete(String(taskId))
+        setUnreadTasks(prev => {
+          if (!prev.has(String(taskId))) return prev
+          const next = new Set(prev)
+          next.delete(String(taskId))
+          return next
+        })
+
         if (Number(getCurrentTaskId()) === Number(taskId)) {
           router.push('/task')
         }
@@ -261,8 +274,8 @@ export function Sidebar({ className }: SidebarProps) {
 
   // Get currently selected task ID (parsed from path, supports /task/[id] format)
   const getCurrentTaskId = useCallback(() => {
-    // Match /task/[number] pattern
-    const match = pathname.match(/^\/task\/(\d+)\/?$/);
+    // Match /task/[id] pattern
+    const match = pathname.match(/^\/task\/([^/]+)\/?$/);
     if (match) {
       return match[1];
     }
@@ -270,6 +283,8 @@ export function Sidebar({ className }: SidebarProps) {
   }, [pathname])
 
   const [tasks, setTasks] = useState<Task[]>([])
+  const [unreadTasks, setUnreadTasks] = useState<Set<string>>(new Set())
+  const taskStatusRef = useRef<Map<string, string>>(new Map())
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null)
   const [isLoadingTasks, setIsLoadingTasks] = useState(false)
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(true)
@@ -277,7 +292,13 @@ export function Sidebar({ className }: SidebarProps) {
   const [hasMore, setHasMore] = useState(true)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const navRef = useRef<HTMLElement | null>(null)
+  const pathnameRef = useRef(pathname)
+  pathnameRef.current = pathname // Synchronous update during render
   const displayVersion = versionInfo?.display_version || "unknown"
+
+  // Loading state ref for polling interval
+  const loadingRef = useRef({ isLoadingTasks, isLoadingMore })
+  loadingRef.current = { isLoadingTasks, isLoadingMore }
 
   useEffect(() => {
     let isCancelled = false
@@ -365,10 +386,10 @@ export function Sidebar({ className }: SidebarProps) {
   }, [githubRepoDisplay, isAboutOpen])
 
   // Load task list
-  const loadTasks = useCallback(async (pageNum = 1, isAppending = false) => {
+  const loadTasks = useCallback(async (pageNum = 1, isAppending = false, isPolling = false) => {
     if (isAppending) {
       setIsLoadingMore(true)
-    } else {
+    } else if (!isPolling) {
       setIsLoadingTasks(true)
     }
 
@@ -379,7 +400,46 @@ export function Sidebar({ className }: SidebarProps) {
         // Handle new API response format {tasks: [...], pagination: {...}}
         const newTasks = data.tasks || (Array.isArray(data) ? data : [])
 
-        if (isAppending) {
+        // Update task status ref and check for unread completed tasks
+        const currentUnreadUpdates = new Set<string>()
+        const match = pathnameRef.current.match(/^\/task\/([^/]+)\/?$/)
+        const currentTaskId = match ? match[1] : null
+
+        newTasks.forEach((task: Task) => {
+          const stringTaskId = String(task.task_id)
+          const prevStatus = taskStatusRef.current.get(stringTaskId)
+          // If task completed and wasn't completed before (and we have a previous record)
+          if (task.status === 'completed' && prevStatus && prevStatus !== 'completed') {
+            // Only mark as unread if we are not currently on this task page
+            if (String(currentTaskId) !== stringTaskId) {
+              currentUnreadUpdates.add(stringTaskId)
+            }
+          }
+          taskStatusRef.current.set(stringTaskId, task.status)
+        })
+
+        if (currentUnreadUpdates.size > 0) {
+          setUnreadTasks(prev => {
+            const next = new Set(prev)
+            currentUnreadUpdates.forEach(id => next.add(id))
+            return next
+          })
+        }
+
+        if (isPolling) {
+          setTasks(prev => {
+            const prevIds = new Set(prev.map(t => String(t.task_id)))
+            const completelyNewTasks = newTasks.filter((t: Task) => !prevIds.has(String(t.task_id)))
+
+            const newTasksMap = new Map(newTasks.map((t: Task) => [String(t.task_id), t]))
+            const updatedTasks = prev.map(t => {
+              const updated = newTasksMap.get(String(t.task_id))
+              return updated ? { ...t, ...updated } : t
+            })
+
+            return [...completelyNewTasks, ...updatedTasks]
+          })
+        } else if (isAppending) {
           setTasks(prev => [...prev, ...newTasks])
         } else {
           setTasks(newTasks)
@@ -397,6 +457,32 @@ export function Sidebar({ className }: SidebarProps) {
       setIsLoadingMore(false)
     }
   }, [])
+
+  // Poll for task updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Only poll if window is visible and not already loading
+      if (document.visibilityState === 'visible' && !loadingRef.current.isLoadingTasks && !loadingRef.current.isLoadingMore) {
+        loadTasks(1, false, true)
+      }
+    }, 30000) // Poll every 30 seconds
+
+    return () => clearInterval(interval)
+  }, [loadTasks])
+
+  // Clear unread status when entering a task page
+  useEffect(() => {
+    const currentTaskId = getCurrentTaskId()
+    if (currentTaskId) {
+      setUnreadTasks(prev => {
+        if (!prev.has(String(currentTaskId))) return prev
+
+        const next = new Set(prev)
+        next.delete(String(currentTaskId))
+        return next
+      })
+    }
+  }, [pathname, getCurrentTaskId])
 
   // Monitor task list changes, if content is not enough to fill the container and there is more data, automatically load the next page
   useEffect(() => {
@@ -482,20 +568,20 @@ export function Sidebar({ className }: SidebarProps) {
 
   return (
     <div ref={sidebarRef} className={cn(
-      "flex flex-col bg-card border-r border-border transition-all duration-300",
+      "flex flex-col bg-card border-r border-border transition-all duration-300 shrink-0",
       isAgentPage ? "h-full" : "h-full",
-      shouldShowSidebar ? "w-64" : "w-0",
+      shouldShowSidebar ? "w-72" : "w-0",
       className
     )}>
       {/* Logo */}
-      <div className="flex h-16 items-center justify-between border-b border-border px-4">
+      <div className="flex h-16 items-center justify-between px-6 mt-2">
         <Link href="/task" className="flex items-center gap-2">
           <img
             src={branding.logoPath}
             alt={branding.logoAlt}
-            className="h-12 w-12"
+            className="h-8 w-8 rounded-lg"
           />
-          <h1 className="text-2xl font-bold gradient-text">{branding.appName}</h1>
+          <h1 className="text-xl font-bold text-foreground">{branding.appName}</h1>
         </Link>
         {isAgentPage && (
           <button
@@ -514,7 +600,7 @@ export function Sidebar({ className }: SidebarProps) {
         onScroll={handleScroll}
       >
         {/* Sticky Navigation Groups */}
-        <div className="sticky top-0 z-10 bg-card -mx-3 px-3 pb-2 pt-2">
+        <div className="sticky top-0 z-10 bg-card -mx-3 px-3 py-2">
           {/* Groups */}
           {navigationGroups.map((group, groupIndex) => (
             <div key={group.title} className={cn("mb-6", groupIndex === 0 && "mt-0")}>
@@ -529,18 +615,13 @@ export function Sidebar({ className }: SidebarProps) {
                   const isExpanded = isMenuExpanded(item.href)
 
                   const activeStyle = `
-                    bg-gradient-to-r
-                    from-[hsl(var(--sidebar-active-bg-from))]
-                    to-[hsl(var(--sidebar-active-bg-to))]
-                    text-[hsl(var(--sidebar-active-text))]
+                    bg-primary/10
+                    text-primary
                     font-semibold
-                    relative
-                    before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2
-                    before:h-[100%] before:w-1
-                    before:bg-[hsl(var(--sidebar-active-border))]
-                    before:rounded-r-full
+                    rounded-lg
+                    mx-2
                   `;
-                  const inactiveStyle = "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                  const inactiveStyle = "text-muted-foreground hover:bg-accent/50 hover:text-foreground mx-2 rounded-lg"
 
                   if (hasChildren) {
                     return (
@@ -548,12 +629,12 @@ export function Sidebar({ className }: SidebarProps) {
                         <button
                           onClick={() => toggleMenu(item.href)}
                           className={cn(
-                            "group flex items-center justify-between w-full px-4 py-2 text-sm transition-colors relative",
+                            "group flex items-center justify-between px-3 py-2 text-sm transition-colors relative w-[calc(100%-1rem)]",
                             isActive ? activeStyle : inactiveStyle
                           )}
                         >
                           <div className="flex items-center gap-3">
-                            <item.icon className={cn("h-5 w-5", isActive ? "text-[hsl(var(--sidebar-active-text))]" : "text-gray-500")} />
+                            <item.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-gray-500")} />
                             {item.nameKey ? t(item.nameKey) : item.name}
                           </div>
                           {isExpanded ? (
@@ -571,13 +652,13 @@ export function Sidebar({ className }: SidebarProps) {
                                   <Link
                                     href={child.href}
                                     className={cn(
-                                      "group flex items-center px-4 py-2 text-sm font-medium rounded-r-full transition-colors",
+                                      "group flex items-center px-4 py-2 text-sm font-medium transition-colors rounded-lg mx-2",
                                       isChildActive
-                                        ? "bg-[hsl(var(--sidebar-active-bg-from))] text-[hsl(var(--sidebar-active-text))] relative before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-1 before:bg-[hsl(var(--sidebar-active-border))] before:rounded-r-full"
+                                        ? "bg-primary/10 text-primary"
                                         : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                                     )}
                                   >
-                                    <child.icon className={cn("h-4 w-4 mr-3", isChildActive ? "text-[hsl(var(--sidebar-active-text))]" : child.color || "text-muted-foreground")} />
+                                    <child.icon className={cn("h-4 w-4 mr-3", isChildActive ? "text-primary" : child.color || "text-muted-foreground")} />
                                     {child.nameKey ? t(child.nameKey) : child.name}
                                   </Link>
                                 </div>
@@ -594,11 +675,11 @@ export function Sidebar({ className }: SidebarProps) {
                       key={item.name}
                       href={item.href}
                       className={cn(
-                        "group flex items-center px-4 py-3 text-sm font-medium transition-colors mb-1",
+                        "group flex items-center px-3 py-2 text-sm font-medium transition-colors mb-1",
                         isActive ? activeStyle : inactiveStyle
                       )}
                     >
-                      <item.icon className={cn("h-5 w-5 mr-3", isActive ? "text-[hsl(var(--sidebar-active-text))]" : "text-gray-500")} />
+                      <item.icon className={cn("h-5 w-5 mr-3", isActive ? "text-primary" : "text-gray-500")} />
                       {item.nameKey ? t(item.nameKey) : item.name}
                     </Link>
                   )
@@ -609,7 +690,7 @@ export function Sidebar({ className }: SidebarProps) {
         </div>
 
         {/* History Section */}
-        <div className="pt-4 border-t border-border mt-2">
+        <div>
           <div
             className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between cursor-pointer hover:text-slate-300 transition-colors"
             onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
@@ -634,9 +715,9 @@ export function Sidebar({ className }: SidebarProps) {
                         href={`/task/${task.task_id}`}
                         title={task.title}
                         className={cn(
-                          "group flex items-center px-4 py-2 text-sm font-medium transition-colors mb-1 truncate relative pr-8",
+                          "group flex items-center px-3 py-2 text-sm transition-colors mb-1 truncate relative pr-8 rounded-lg mx-2",
                           String(currentTaskId) === String(task.task_id)
-                            ? "bg-accent/80 text-accent-foreground font-medium"
+                            ? "bg-primary/10 text-primary font-medium"
                             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                         )}
                       >
@@ -662,9 +743,12 @@ export function Sidebar({ className }: SidebarProps) {
                           </div>
                         </div>
                         <span className="truncate flex-1 text-left">{task.title || "Untitled Task"}</span>
+                        {unreadTasks.has(String(task.task_id)) && (
+                          <div className="absolute right-4 top-1/2 -translate-y-1/2 h-2 w-2 rounded-full bg-primary group-hover:opacity-0 transition-opacity" />
+                        )}
                         <button
                           onClick={(e) => deleteTask(task.task_id, e)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 z-10"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700"
                           title={t('common.delete')}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -689,7 +773,7 @@ export function Sidebar({ className }: SidebarProps) {
 
 
       {/* User Profile */}
-      <div className="border-t border-border p-4 relative" ref={userMenuRef}>
+      <div className="p-4 relative mt-auto" ref={userMenuRef}>
         {showUserMenu && (
           <div className="absolute bottom-full left-4 right-4 mb-2 bg-popover border border-border rounded-lg shadow-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-50">
              <div className="py-1">
@@ -732,35 +816,11 @@ export function Sidebar({ className }: SidebarProps) {
           onClick={() => setShowUserMenu(!showUserMenu)}
           className="flex w-full items-center gap-2 hover:bg-accent/50 p-2 -ml-2 rounded-lg transition-colors text-left"
         >
-          <div className="h-8 w-8 shrink-0 rounded-full bg-accent flex items-center justify-center">
-            <User className="h-4 w-4 text-accent-foreground" />
+          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
+            <User className="h-4 w-4 text-primary" />
           </div>
-          <div className="ml-1 min-w-0 flex-1">
-            <p className="truncate whitespace-nowrap text-base font-medium text-foreground">{user?.username || t('sidebar.user.defaultName')}</p>
-            <div className="mt-0">
-              <span
-                className="inline-flex shrink-0 max-w-[8.5rem] items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground text-ellipsis"
-                title={
-                  versionInfo?.is_latest === true
-                    ? t("sidebar.about.versionLatest")
-                    : versionInfo?.is_latest === false
-                      ? t("sidebar.about.versionUpdateAvailable")
-                      : t("sidebar.about.versionStatusUnknown")
-                }
-              >
-                <span
-                  className={cn(
-                    "h-1.5 w-1.5 rounded-full",
-                    versionInfo?.is_latest === true
-                      ? "bg-green-500"
-                      : versionInfo?.is_latest === false
-                        ? "bg-yellow-400"
-                        : "bg-gray-400"
-                  )}
-                />
-                {displayVersion}
-              </span>
-            </div>
+          <div className="ml-3 flex-1">
+            <p className="text-sm font-medium text-foreground">{user?.username || t('sidebar.user.defaultName')}</p>
           </div>
           <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", showUserMenu && "rotate-180")} />
         </button>

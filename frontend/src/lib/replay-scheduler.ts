@@ -1,3 +1,5 @@
+import { normalizeTimestampMs } from './time-utils'
+
 interface ReplayEvent {
   type: 'message' | 'step' | 'trace' | 'dag' | 'ws_message'
   data: any
@@ -27,22 +29,7 @@ export class ReplayScheduler {
   setEvents(events: ReplayEvent[]): void {
     this.events = events.sort((a, b) => {
       // Handle both Unix timestamp (number) and ISO string formats
-      let timeA: number
-      let timeB: number
-
-      if (typeof a.timestamp === 'number') {
-        timeA = a.timestamp * 1000 // Convert seconds to milliseconds
-      } else {
-        timeA = new Date(a.timestamp).getTime()
-      }
-
-      if (typeof b.timestamp === 'number') {
-        timeB = b.timestamp * 1000 // Convert seconds to milliseconds
-      } else {
-        timeB = new Date(b.timestamp).getTime()
-      }
-
-      return timeA - timeB
+      return normalizeTimestampMs(a.timestamp) - normalizeTimestampMs(b.timestamp)
     })
     this.currentIndex = 0
   }

@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { getApiUrl } from '@/lib/utils';
 import { apiRequest } from '@/lib/api-wrapper';
-import { Shuffle } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { useI18n } from '@/contexts/i18n-context';
 
 interface TokenUsageDisplayProps {
@@ -62,16 +62,15 @@ export function TokenUsageDisplay({ taskId, isRunning, className }: TokenUsageDi
   if (!usage) return null;
 
   return (
-    <div className={`inline-flex items-center gap-2 rounded-xl border bg-card/80 backdrop-blur p-2 text-sm text-muted-foreground ${className}`}>
-      <Shuffle className="w-3.5 h-3.5 text-yellow-500" />
-      <span className="flex items-center gap-1">
-        <span className="font-mono font-medium text-foreground">{usage.input_tokens.toLocaleString()}</span>
-        <span className="text-xs opacity-70">{t('chatPage.tokenUsage.input')}</span>
+    <div className={`inline-flex items-center gap-4 px-4 py-2 text-sm ${className}`}>
+      <span className="flex items-center gap-1.5">
+        <Sparkles className="w-4 h-4 text-indigo-500" />
+        <span className="font-medium text-foreground">{usage.input_tokens.toLocaleString()}</span>
+        <span className="text-muted-foreground">{t('chatPage.tokenUsage.input')}</span>
       </span>
-      <span className="mx-0.5 opacity-30">|</span>
-      <span className="flex items-center gap-1">
-        <span className="font-mono font-medium text-foreground">{usage.output_tokens.toLocaleString()}</span>
-        <span className="text-xs opacity-70">{t('chatPage.tokenUsage.output')}</span>
+      <span className="flex items-center gap-1.5">
+        <span className="font-medium text-foreground">{usage.output_tokens.toLocaleString()}</span>
+        <span className="text-muted-foreground">{t('chatPage.tokenUsage.output')}</span>
       </span>
     </div>
   );

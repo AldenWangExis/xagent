@@ -452,31 +452,6 @@ function CenterPanelInner({
   const { fitView, zoomIn, zoomOut } = useReactFlow()
   const hasFittedView = useRef(false)
 
-  // Format DAG execution time with better error handling
-  const formatDagExecutionTime = (timestamp: string | number) => {
-    try {
-      let timestampNum: number
-
-      // Convert to number if it's a string
-      if (typeof timestamp === 'string') {
-        timestampNum = parseInt(timestamp, 10)
-        if (isNaN(timestampNum)) {
-          return 'Invalid timestamp'
-        }
-      } else {
-        timestampNum = timestamp
-      }
-
-      // Check if it's in seconds or milliseconds
-      // If it's less than 10000000000 (year 2286), assume it's seconds
-      const correctedTimestamp = timestampNum > 10000000000 ? timestampNum : timestampNum * 1000
-
-      return new Date(correctedTimestamp).toLocaleString()
-    } catch (error) {
-      return 'Time error'
-    }
-  }
-
   // Get display phase based on task status and dagExecution
   const getDisplayPhase = () => {
     // If task is completed or failed, use that status regardless of dagExecution
@@ -598,7 +573,7 @@ function CenterPanelInner({
               {getPhaseBadge(displayPhase)}
             </div>
             <div className="text-xs text-muted-foreground">
-              {t("agent.layout.center.labels.updatedAt")}{formatDagExecutionTime(dagExecution.updated_at)}
+              {t("agent.layout.center.labels.updatedAt")}{formatTime(dagExecution.updated_at, 'datetime')}
             </div>
           </div>
         )}

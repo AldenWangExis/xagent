@@ -1,12 +1,11 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { useApp } from "@/contexts/app-context-chat"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
-import { Loader2, XIcon } from "lucide-react"
-import { DocxPreviewRenderer } from "@/components/docx-preview-renderer"
+import { FileViewer } from "@/components/file/file-viewer"
 
 interface FilePreviewContentProps {
   open: boolean
@@ -107,82 +106,18 @@ export function FilePreviewContent({ open }: FilePreviewContentProps) {
     }
   }, [open, filePreview.fileId, filePreview.content, filePreview.error, dispatch, t, filePreview.fileName])
 
-  const processHtmlContent = (htmlContent: string, fileId: string) => {
-    if (!htmlContent || !fileId) return htmlContent
-
-    const apiUrl = getApiUrl()
-
-    return htmlContent.replace(
-      /(src|href)=["']([^"']+)["']/g,
-      (match, attr, path) => {
-        if (path.match(/^(https?:\/|data:|\/\/|#)/)) return match
-
-        return `${attr}="${apiUrl}/api/files/public/preview/${encodeURIComponent(fileId)}?relative_path=${encodeURIComponent(path)}"`
-      }
-    )
-  }
-
   return (
-    <div className="w-full h-full">
+    <div className="w-full h-full flex flex-col">
       <div className="flex-1 overflow-hidden flex flex-col min-h-0 h-full">
-        {filePreview.isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="flex flex-col items-center gap-2">
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <span className="text-sm text-muted-foreground">{t('files.previewDialog.loading')}</span>
-            </div>
-          </div>
-        ) : filePreview.error ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="flex flex-col items-center gap-2 text-center">
-              <XIcon className="h-8 w-8 text-destructive" />
-              <span className="text-sm text-muted-foreground">{filePreview.error}</span>
-            </div>
-          </div>
-        ) : (
-          <div className="flex-1 overflow-auto bg-muted/30 rounded border">
-            {filePreview.mimeType?.startsWith('image/') ? (
-              <div className="flex items-center justify-center h-full p-4">
-                <img
-                  src={`data:${filePreview.mimeType};base64,${filePreview.content || ''}`}
-                  alt={filePreview.fileName}
-                  className="max-w-full max-h-full object-contain"
-                  onError={(e) => {
-                    console.error('Image load error:', e)
-                    e.currentTarget.style.display = 'none'
-                    const fallback = e.currentTarget.nextElementSibling as HTMLElement
-                    if (fallback) fallback.style.display = 'flex'
-                  }}
-                />
-                <div className="hidden flex-col items-center justify-center h-full text-muted-foreground">
-                  <span>{t('files.previewDialog.imageError.title')}</span>
-                  <span className="text-sm">{t('files.previewDialog.imageError.hint')}</span>
-                </div>
-              </div>
-            ) : filePreview.mimeType === 'application/pdf' || filePreview.fileName.toLowerCase().endsWith('.pdf') || filePreview.fileName.toLowerCase().endsWith('.pptx') ? (
-              <div className="flex items-center justify-center h-full p-4">
-                <iframe
-                  src={`data:application/pdf;base64,${filePreview.content || ''}`}
-                  className="w-full h-full border-0"
-                  title={filePreview.fileName}
-                />
-              </div>
-            ) : filePreview.mimeType?.includes('wordprocessingml') || filePreview.fileName.toLowerCase().endsWith('.docx') ? (
-              <DocxPreviewRenderer base64Content={filePreview.content || ''} />
-            ) : filePreview.fileName.endsWith('.html') || filePreview.fileName.endsWith('.htm') ? (
-              <iframe
-                srcDoc={processHtmlContent(filePreview.content, filePreview.fileId)}
-                className="w-full h-full border-0"
-                sandbox="allow-same-origin allow-scripts"
-                title={filePreview.fileName}
-              />
-            ) : (
-              <pre className="p-4 text-sm font-mono whitespace-pre-wrap break-words">
-                {filePreview.content || t('files.previewDialog.emptyContent')}
-              </pre>
-            )}
-          </div>
-        )}
+        <FileViewer
+          fileName={filePreview.fileName}
+          fileId={filePreview.fileId}
+          content={filePreview.content}
+          mimeType={filePreview.mimeType}
+          isLoading={filePreview.isLoading}
+          error={filePreview.error}
+          viewMode={filePreview.viewMode}
+        />
       </div>
     </div>
   )
