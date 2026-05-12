@@ -20,7 +20,7 @@ from ..LanceDB.schema_manager import (
     ensure_main_pointers_table,
     ensure_parses_table,
 )
-from ..storage.factory import get_vector_store_raw_connection
+from ..storage.factory import get_vector_index_store, get_vector_store_raw_connection
 from ..utils.lancedb_query_utils import _safe_count_rows
 from ..utils.string_utils import (
     build_lancedb_filter_expression,
@@ -178,6 +178,150 @@ def _get_table_names(conn: Any) -> list[str]:
     if not names:
         return []
     return [str(name) for name in names]
+
+
+def _is_milvus_backend_enabled() -> bool:
+    try:
+        from ..storage.vector_backend import (
+            VectorBackend,
+            get_configured_vector_backend,
+        )
+    except Exception:
+        return False
+    return get_configured_vector_backend() is VectorBackend.MILVUS
+
+
+def _plan_document_embeddings_via_store(
+    *,
+    collection: str,
+    doc_id: str,
+    user_id: Optional[int],
+    is_admin: bool,
+    model_tag: Optional[str],
+) -> Dict[str, int]:
+    if not _is_milvus_backend_enabled():
+        return {}
+
+    vector_store = get_vector_index_store()
+    count_fn = getattr(vector_store, "count_embeddings_for_document", None)
+    if not callable(count_fn):
+        return {}
+
+    try:
+        count = int(
+            count_fn(
+                collection_name=collection,
+                doc_id=doc_id,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Milvus embedding preview fallback failed: %s", exc)
+        return {}
+
+    if count <= 0:
+        return {}
+    table_key = f"embeddings_{model_tag}" if model_tag else "embeddings_milvus"
+    return {table_key: count}
+
+
+def _delete_document_embeddings_via_store(
+    *,
+    collection: str,
+    doc_id: str,
+    user_id: Optional[int],
+    is_admin: bool,
+) -> Dict[str, int]:
+    if not _is_milvus_backend_enabled():
+        return {}
+
+    vector_store = get_vector_index_store()
+    delete_fn = getattr(vector_store, "delete_document_embeddings", None)
+    if not callable(delete_fn):
+        return {}
+
+    try:
+        deleted = delete_fn(
+            collection_name=collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Milvus embedding delete fallback failed: %s", exc)
+        return {}
+
+    normalized: Dict[str, int] = {}
+    for key, value in dict(deleted).items():
+        try:
+            normalized[str(key)] = int(value)
+        except Exception:  # noqa: BLE001
+            continue
+    return normalized
+
+
+def _plan_collection_embeddings_via_store(
+    *,
+    collection: str,
+    user_id: Optional[int],
+    is_admin: bool,
+    model_tag: Optional[str],
+) -> Dict[str, int]:
+    if not _is_milvus_backend_enabled():
+        return {}
+
+    vector_store = get_vector_index_store()
+    count_fn = getattr(vector_store, "count_embeddings_by_collection", None)
+    if not callable(count_fn):
+        return {}
+
+    try:
+        counts = count_fn(user_id=user_id, is_admin=is_admin)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Milvus collection preview fallback failed: %s", exc)
+        return {}
+
+    if not isinstance(counts, dict):
+        return {}
+    count = int(counts.get(collection, 0))
+    if count <= 0:
+        return {}
+    table_key = f"embeddings_{model_tag}" if model_tag else "embeddings_milvus"
+    return {table_key: count}
+
+
+def _delete_collection_embeddings_via_store(
+    *,
+    collection: str,
+    user_id: Optional[int],
+    is_admin: bool,
+) -> Dict[str, int]:
+    if not _is_milvus_backend_enabled():
+        return {}
+
+    vector_store = get_vector_index_store()
+    delete_fn = getattr(vector_store, "delete_collection_embeddings", None)
+    if not callable(delete_fn):
+        return {}
+
+    try:
+        deleted = delete_fn(
+            collection_name=collection,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Milvus collection delete fallback failed: %s", exc)
+        return {}
+
+    normalized: Dict[str, int] = {}
+    for key, value in dict(deleted).items():
+        try:
+            normalized[str(key)] = int(value)
+        except Exception:  # noqa: BLE001
+            continue
+    return normalized
 
 
 def _plan_by_predicates(
@@ -451,9 +595,51 @@ def cascade_delete(
             )
 
     if preview_only and not confirm:
-        return _plan_by_predicates(conn, predicates, model_tag=None)
+        planned = _plan_by_predicates(conn, predicates, model_tag=None)
+        if not any(str(key).startswith("embeddings_") for key in planned) and target in {
+            "document",
+            "collection",
+        }:
+            if target == "document":
+                milvus_planned = _plan_document_embeddings_via_store(
+                    collection=collection,
+                    doc_id=str(doc_id),
+                    user_id=user_id,
+                    is_admin=is_admin,
+                    model_tag=model_tag,
+                )
+            else:
+                milvus_planned = _plan_collection_embeddings_via_store(
+                    collection=collection,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                    model_tag=model_tag,
+                )
+            for key, value in milvus_planned.items():
+                planned[key] = planned.get(key, 0) + int(value)
+        return planned
 
-    return _delete_by_predicates(conn, predicates, model_tag=None)
+    deleted = _delete_by_predicates(conn, predicates, model_tag=None)
+    if not any(str(key).startswith("embeddings_") for key in deleted) and target in {
+        "document",
+        "collection",
+    }:
+        if target == "document":
+            milvus_deleted = _delete_document_embeddings_via_store(
+                collection=collection,
+                doc_id=str(doc_id),
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        else:
+            milvus_deleted = _delete_collection_embeddings_via_store(
+                collection=collection,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        for key, value in milvus_deleted.items():
+            deleted[key] = deleted.get(key, 0) + int(value)
+    return deleted
 
 
 def cleanup_cascade(

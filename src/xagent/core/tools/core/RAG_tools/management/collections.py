@@ -1319,6 +1319,7 @@ def delete_document(
     vector_store = get_vector_index_store()
 
     authorized_via_legacy_source_path = False
+    warnings: List[str] = []
 
     try:
         document_count = vector_store.count_rows(
@@ -1340,7 +1341,7 @@ def delete_document(
             doc_id=doc_id,
             new_status=DocumentProcessingStatus.FAILED,
             message=f"Failed to delete document: {exc}",
-            warnings=[],
+            warnings=warnings,
             details={},
         )
 
@@ -1353,7 +1354,7 @@ def delete_document(
                 doc_id=doc_id,
                 new_status=DocumentProcessingStatus.FAILED,
                 message="Document not found or not accessible.",
-                warnings=[],
+                warnings=warnings,
                 details={},
             )
 
@@ -1370,7 +1371,7 @@ def delete_document(
                 doc_id=doc_id,
                 new_status=DocumentProcessingStatus.FAILED,
                 message="Document not found or not accessible.",
-                warnings=[],
+                warnings=warnings,
                 details={},
             )
 
@@ -1392,6 +1393,24 @@ def delete_document(
             user_id=None if authorized_via_legacy_source_path else user_id,
             is_admin=is_admin or authorized_via_legacy_source_path,
         )
+
+        milvus_cleanup = getattr(vector_store, "delete_document_embeddings", None)
+        if callable(milvus_cleanup):
+            try:
+                milvus_counts = milvus_cleanup(
+                    collection_name=collection,
+                    doc_id=doc_id,
+                    user_id=None if authorized_via_legacy_source_path else user_id,
+                    is_admin=is_admin or authorized_via_legacy_source_path,
+                )
+                for key, value in milvus_counts.items():
+                    counts[key] = counts.get(key, 0) + int(value)
+            except Exception as exc:  # noqa: BLE001
+                warning = (
+                    f"Failed to delete Milvus embeddings for '{collection}/{doc_id}': {exc}"
+                )
+                logger.warning(warning)
+                warnings.append(warning)
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to delete document %s/%s: %s", collection, doc_id, exc)
         return DocumentOperationResult(
@@ -1400,7 +1419,7 @@ def delete_document(
             doc_id=doc_id,
             new_status=DocumentProcessingStatus.FAILED,
             message=f"Failed to delete document: {exc}",
-            warnings=[],
+            warnings=warnings,
             details={},
         )
 
@@ -1410,7 +1429,7 @@ def delete_document(
         doc_id=doc_id,
         new_status=DocumentProcessingStatus.FAILED,
         message="Document deleted successfully.",
-        warnings=[],
+        warnings=warnings,
         details=counts,
     )
 

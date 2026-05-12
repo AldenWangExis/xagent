@@ -801,6 +801,8 @@ class VectorIndexStore(ABC):
         top_k: int,
         filters: Optional[FilterExpression] = None,
         vector_column_name: str = "vector",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
     ) -> List[Dict[str, Any]]:
         """Execute vector search (async).
 
@@ -810,6 +812,8 @@ class VectorIndexStore(ABC):
             top_k: Number of top results to return.
             filters: Optional abstract filter expression.
             vector_column_name: Name of vector column (default "vector").
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether the user has admin privileges.
 
         Returns:
             List of search result dictionaries with keys:
@@ -860,6 +864,8 @@ class VectorIndexStore(ABC):
             top_k=top_k,
             filters=filters,
             vector_column_name=vector_column_name,
+            user_id=user_id,
+            is_admin=is_admin,
         )
 
     @abstractmethod

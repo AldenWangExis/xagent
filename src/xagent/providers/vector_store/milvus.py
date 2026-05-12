@@ -101,6 +101,11 @@ class MilvusVectorStore(VectorStore):
         )
         self._vector_dim: Optional[int] = None
 
+    # Stable id strings written by xagent are sha256 hex digests (64 chars).
+    # Reserve headroom (legacy sha1 = 40 chars, future migrations) without
+    # bloating storage on Milvus v2.6+.
+    _ID_FIELD_MAX_LENGTH: ClassVar[int] = 128
+
     def _ensure_collection(self, vector_dim: int) -> None:
         if vector_dim <= 0:
             raise ValueError("vector dimension must be greater than zero")
@@ -114,6 +119,7 @@ class MilvusVectorStore(VectorStore):
                 dimension=vector_dim,
                 primary_field_name="id",
                 id_type="string",
+                max_length=self._ID_FIELD_MAX_LENGTH,
                 vector_field_name="vector",
                 metric_type=self._metric_type,
                 auto_id=False,
@@ -194,15 +200,26 @@ class MilvusVectorStore(VectorStore):
         if not query_vector:
             return []
 
-        self._ensure_collection(vector_dim=len(query_vector))
+        # search() must not create collections; that side effect belongs to the
+        # write path. Returning early avoids spurious VARCHAR/index params being
+        # required on read-only callers.
+        if not self._client.has_collection(self._collection_name):
+            return []
 
         # Fetch more candidates when filters are provided, then filter in Python.
         limit = max(top_k, top_k * 5 if filters else top_k)
+        # Bounded consistency keeps latency predictable on freshly-inserted data.
+        # Strong waits for QueryNode to catch up to the latest write timestamp,
+        # which can hang for tens of seconds on a standalone Milvus before the
+        # growing segment is loaded — see Milvus issue tracker for v2.6 stalls
+        # on Strong + small inserts. Bounded is the official default for dense
+        # vector search and is sufficient for xagent's KB semantics.
         raw = self._client.search(
             collection_name=self._collection_name,
             data=[query_vector],
             limit=limit,
             output_fields=["metadata"],
+            consistency_level="Bounded",
         )
 
         hits = raw[0] if raw else []

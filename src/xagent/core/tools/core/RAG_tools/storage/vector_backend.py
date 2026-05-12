@@ -1,8 +1,8 @@
 """Vector index backend selection (switchable vector store).
 
 Resolve which :class:`~.contracts.VectorIndexStore` implementation to use from
-environment. Only LanceDB is implemented today; additional backends register
-here and in :meth:`StorageFactory.get_vector_index_store`.
+environment. LanceDB is the default backend; Milvus is supported through the
+hybrid adapter while other backends register here as they are implemented.
 
 Test isolation: pytest should call ``reset_rag_storage_for_tests`` in
 ``storage.factory`` instead of importing a specific provider; extend that
@@ -78,6 +78,13 @@ def require_implemented_vector_backend(backend: VectorBackend) -> None:
         ConfigurationError: If the backend is known but not implemented yet.
     """
     if backend is VectorBackend.LANCEDB:
+        return
+    if backend is VectorBackend.MILVUS:
+        milvus_uri = os.environ.get("MILVUS_URI", "").strip()
+        if not milvus_uri:
+            raise ConfigurationError(
+                "Vector backend 'milvus' requires MILVUS_URI to be configured."
+            )
         return
     raise ConfigurationError(
         f"Vector backend {backend.value!r} is not implemented yet. "

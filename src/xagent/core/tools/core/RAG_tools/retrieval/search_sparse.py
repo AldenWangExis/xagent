@@ -25,6 +25,15 @@ from ..utils.metadata_utils import deserialize_metadata
 logger = logging.getLogger(__name__)
 
 
+def _is_milvus_hybrid_store(vector_store: Any) -> bool:
+    """Return True when current vector store is Milvus+LanceDB hybrid."""
+    try:
+        from ..storage.hybrid_vector_index_store import HybridVectorIndexStore
+    except Exception:  # pragma: no cover - defensive import guard
+        return False
+    return isinstance(vector_store, HybridVectorIndexStore)
+
+
 def search_sparse(
     collection: str,
     model_tag: str,
@@ -56,6 +65,25 @@ def search_sparse(
     table = None
     try:
         vector_store = get_vector_index_store()
+        if _is_milvus_hybrid_store(vector_store):
+            current_warnings.append(
+                SearchWarning(
+                    code="SPARSE_UNSUPPORTED_BACKEND",
+                    message=(
+                        "Sparse/FTS search is unsupported when Milvus vector backend "
+                        "is enabled. Falling back to dense-only retrieval."
+                    ),
+                    fallback_action=SearchFallbackAction.PARTIAL_RESULTS,
+                    affected_models=[model_tag],
+                )
+            )
+            return _build_sparse_response(
+                results=[],
+                warnings=current_warnings,
+                fts_enabled=False,
+                query_text=query_text,
+                status="partial_success",
+            )
 
         # Open embeddings table with legacy fallback (handled by abstraction layer)
         # open_embeddings_table will handle adding the "embeddings_" prefix
@@ -366,6 +394,24 @@ async def search_sparse_async(
     Note: FTS index creation uses VectorIndexStore.create_index() for full decoupling.
     """
     vector_store = get_vector_index_store()
+    if _is_milvus_hybrid_store(vector_store):
+        return _build_sparse_response(
+            results=[],
+            warnings=[
+                SearchWarning(
+                    code="SPARSE_UNSUPPORTED_BACKEND",
+                    message=(
+                        "Sparse/FTS search is unsupported when Milvus vector backend "
+                        "is enabled. Falling back to dense-only retrieval."
+                    ),
+                    fallback_action=SearchFallbackAction.PARTIAL_RESULTS,
+                    affected_models=[model_tag],
+                )
+            ],
+            fts_enabled=False,
+            query_text=query_text,
+            status="partial_success",
+        )
 
     _fts_enabled = False
     current_warnings: List[SearchWarning] = []

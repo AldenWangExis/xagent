@@ -11,13 +11,23 @@ from ..core.schemas import (
     FusionConfig,
     FusionStrategy,
     HybridSearchResponse,
+    SearchFallbackAction,
     SearchResult,
     SearchWarning,
 )
 from ..retrieval.search_dense import search_dense
 from ..retrieval.search_sparse import search_sparse
+from ..storage.factory import get_vector_index_store
 
 logger = logging.getLogger(__name__)
+
+
+def _is_milvus_hybrid_backend() -> bool:
+    try:
+        from ..storage.hybrid_vector_index_store import HybridVectorIndexStore
+    except Exception:  # pragma: no cover - defensive import guard
+        return False
+    return isinstance(get_vector_index_store(), HybridVectorIndexStore)
 
 
 def _rrf_fusion(
@@ -222,20 +232,34 @@ def search_hybrid(
     dense_results = dense_response.results
     all_warnings.extend(dense_response.warnings)
 
-    # 2. Execute Sparse Search
-    logger.info("Executing sparse search for model %s...", model_tag)
-    sparse_response = search_sparse(
-        collection=collection,
-        model_tag=model_tag,
-        query_text=query_text,
-        top_k=top_k * 2,  # Fetch more for fusion
-        filters=filters,
-        readonly=readonly,
-        user_id=user_id,
-        is_admin=is_admin,
-    )
-    sparse_results = sparse_response.results
-    all_warnings.extend(sparse_response.warnings)
+    sparse_results: List[SearchResult] = []
+    if _is_milvus_hybrid_backend():
+        all_warnings.append(
+            SearchWarning(
+                code="HYBRID_SPARSE_DEGRADED",
+                message=(
+                    "Sparse search is unavailable for Milvus backend. "
+                    "Hybrid search degraded to dense-only results."
+                ),
+                fallback_action=SearchFallbackAction.PARTIAL_RESULTS,
+                affected_models=[model_tag],
+            )
+        )
+    else:
+        # 2. Execute Sparse Search
+        logger.info("Executing sparse search for model %s...", model_tag)
+        sparse_response = search_sparse(
+            collection=collection,
+            model_tag=model_tag,
+            query_text=query_text,
+            top_k=top_k * 2,  # Fetch more for fusion
+            filters=filters,
+            readonly=readonly,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        sparse_results = sparse_response.results
+        all_warnings.extend(sparse_response.warnings)
 
     # Get index status and advice from dense search (primary source for index info)
     index_status = dense_response.index_status

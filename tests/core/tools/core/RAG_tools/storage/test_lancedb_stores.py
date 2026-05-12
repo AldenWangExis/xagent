@@ -1177,6 +1177,60 @@ async def test_search_vectors_async_basic(
 @patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
+async def test_search_vectors_async_applies_acl_from_arguments(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Async search should pass user_id/is_admin into filter builder."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    data = {"doc_id": ["doc1"], "score": [0.95], "vector": [[0.1, 0.2, 0.3]]}
+    arrow_table = pa.Table.from_pydict(data)
+
+    mock_table = Mock()
+    mock_table.schema = Mock(names=[])
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    mock_search = Mock()
+    mock_search.limit.return_value = mock_search
+    mock_search.where = Mock(return_value=mock_search)
+
+    async def mock_to_arrow():
+        return arrow_table
+
+    mock_search.to_arrow = mock_to_arrow
+    mock_table.search = Mock(return_value=mock_search)
+
+    store = LanceDBVectorIndexStore()
+    store.build_filter_expression = Mock(return_value="user_id == 9")  # type: ignore[method-assign]
+
+    _ = await store.search_vectors_async(
+        table_name="embeddings_test",
+        query_vector=[0.1, 0.2, 0.3],
+        top_k=5,
+        user_id=9,
+        is_admin=False,
+    )
+
+    store.build_filter_expression.assert_called_once_with(
+        None,
+        user_id=9,
+        is_admin=False,
+    )
+    mock_search.where.assert_called_once_with("user_id == 9")
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
 async def test_search_fts_async_basic(
     mock_get_connection: Mock, mock_connect_async: AsyncMock
 ) -> None:

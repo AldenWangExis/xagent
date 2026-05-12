@@ -767,6 +767,7 @@ def test_delete_document_authorizes_before_cascade() -> None:
 def test_delete_document_allows_legacy_owner_recovered_from_source_path() -> None:
     vector_store = MagicMock()
     vector_store.count_rows.return_value = 0
+    vector_store.delete_document_embeddings.return_value = {}
 
     legacy_batch = MagicMock()
     legacy_batch.num_rows = 1
@@ -805,6 +806,12 @@ def test_delete_document_allows_legacy_owner_recovered_from_source_path() -> Non
     mock_clear.assert_called_once_with(
         "demo",
         "doc-legacy",
+        user_id=None,
+        is_admin=True,
+    )
+    vector_store.delete_document_embeddings.assert_called_once_with(
+        collection_name="demo",
+        doc_id="doc-legacy",
         user_id=None,
         is_admin=True,
     )
@@ -852,6 +859,7 @@ def test_delete_document_rejects_legacy_row_owned_by_another_user() -> None:
 def test_delete_document_clears_status_with_caller_scope() -> None:
     vector_store = MagicMock()
     vector_store.count_rows.return_value = 1
+    vector_store.delete_document_embeddings.return_value = {}
 
     with (
         patch.object(
@@ -879,6 +887,12 @@ def test_delete_document_clears_status_with_caller_scope() -> None:
     mock_clear.assert_called_once_with(
         "demo",
         "doc-1",
+        user_id=9,
+        is_admin=True,
+    )
+    vector_store.delete_document_embeddings.assert_called_once_with(
+        collection_name="demo",
+        doc_id="doc-1",
         user_id=9,
         is_admin=True,
     )

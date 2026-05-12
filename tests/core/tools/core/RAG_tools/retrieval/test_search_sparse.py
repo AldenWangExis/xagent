@@ -684,3 +684,77 @@ class TestSearchSparse:
         assert "used substring search fallback" in warning.message
         assert "Check FTS tokenizer configuration" in warning.message
         assert "update LanceDB to ensure proper tokenisation" in warning.message
+
+    def test_search_sparse_milvus_backend_returns_unsupported_warning(self) -> None:
+        """Milvus backend should return controlled unsupported response."""
+        mock_vector_store = Mock()
+
+        with (
+            patch(
+                "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store"
+            ) as mock_get_vector_store,
+            patch.object(
+                search_sparse_module, "_is_milvus_hybrid_store", return_value=True
+            ),
+        ):
+            mock_get_vector_store.return_value = mock_vector_store
+            response = search_sparse_module.search_sparse(
+                collection="test_col",
+                model_tag="test_model",
+                query_text="query",
+                top_k=3,
+                user_id=1,
+                is_admin=False,
+            )
+
+        assert response.status == "partial_success"
+        assert response.results == []
+        assert response.fts_enabled is False
+        assert any(w.code == "SPARSE_UNSUPPORTED_BACKEND" for w in response.warnings)
+        mock_vector_store.open_embeddings_table.assert_not_called()
+
+    def test_search_sparse_lancedb_behavior_unchanged(self) -> None:
+        """LanceDB sparse path should continue to execute FTS query."""
+        mock_table = Mock()
+        mock_vector_store = Mock()
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=True,
+        )
+        mock_vector_store.build_filter_expression.return_value = "collection == 'kb'"
+        mock_vector_store.open_embeddings_table.return_value = (
+            mock_table,
+            "embeddings_test_model",
+        )
+
+        mock_search = Mock()
+        mock_limit = Mock()
+        mock_where = Mock()
+        mock_where.to_pandas.return_value = pd.DataFrame([])
+        mock_table.search.return_value = mock_search
+        mock_search.limit.return_value = mock_limit
+        mock_limit.where.return_value = mock_where
+
+        with (
+            patch(
+                "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store"
+            ) as mock_get_vector_store,
+            patch.object(
+                search_sparse_module, "_is_milvus_hybrid_store", return_value=False
+            ),
+            patch.object(search_sparse_module, "_substring_fallback", return_value=[]),
+        ):
+            mock_get_vector_store.return_value = mock_vector_store
+            response = search_sparse_module.search_sparse(
+                collection="kb",
+                model_tag="test_model",
+                query_text="query",
+                top_k=2,
+                is_admin=True,
+            )
+
+        assert response.status == "success"
+        mock_table.search.assert_called_once_with("query", query_type="fts")

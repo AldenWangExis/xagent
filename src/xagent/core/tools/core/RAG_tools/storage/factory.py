@@ -21,6 +21,7 @@ from .contracts import (
     PromptTemplateStore,
     VectorIndexStore,
 )
+from .hybrid_vector_index_store import HybridVectorIndexStore
 from .lancedb_stores import (
     LanceDBIngestionStatusStore,
     LanceDBMainPointerStore,
@@ -105,9 +106,10 @@ class StorageFactory:
         ``VECTOR_STORE_BACKEND``); see :mod:`.vector_backend`.
 
         Returns:
-            Concrete :class:`~.contracts.VectorIndexStore` (currently
-            :class:`~.lancedb_stores.LanceDBVectorIndexStore` when backend is
-            ``lancedb``).
+            Concrete :class:`~.contracts.VectorIndexStore` implementation
+            (:class:`~.lancedb_stores.LanceDBVectorIndexStore` for ``lancedb``,
+            :class:`~.hybrid_vector_index_store.HybridVectorIndexStore` for
+            ``milvus``).
 
         Raises:
             ConfigurationError: Unknown backend name, or backend not implemented
@@ -120,6 +122,9 @@ class StorageFactory:
                     require_implemented_vector_backend(backend)
                     if backend is VectorBackend.LANCEDB:
                         self._vector_index_store = LanceDBVectorIndexStore()
+                        self._vector_backend = backend
+                    elif backend is VectorBackend.MILVUS:
+                        self._vector_index_store = HybridVectorIndexStore()
                         self._vector_backend = backend
                     else:
                         raise AssertionError(

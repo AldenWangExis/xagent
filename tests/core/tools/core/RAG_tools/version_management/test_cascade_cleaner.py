@@ -229,6 +229,189 @@ def test_cleanup_handles_missing_tables(mock_get_conn: MagicMock) -> None:
 @patch(
     "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_index_store"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner._is_milvus_backend_enabled"
+)
+def test_cascade_delete_document_preview_falls_back_to_store_embedding_count(
+    mock_is_milvus_backend_enabled: MagicMock,
+    mock_get_vector_store: MagicMock,
+    mock_get_conn: MagicMock,
+) -> None:
+    """When raw backend has no embeddings tables, preview should use store fallback."""
+    mock_is_milvus_backend_enabled.return_value = True
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
+    table.count_rows.return_value = 1
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    mock_vector_store = MagicMock()
+    mock_vector_store.count_embeddings_for_document.return_value = 4
+    mock_get_vector_store.return_value = mock_vector_store
+
+    result = cascade_delete(
+        target="document",
+        collection="c1",
+        doc_id="d1",
+        user_id=7,
+        is_admin=False,
+        preview_only=True,
+        confirm=False,
+    )
+
+    assert result["documents"] == 1
+    assert result["embeddings_milvus"] == 4
+    mock_vector_store.count_embeddings_for_document.assert_called_once_with(
+        collection_name="c1",
+        doc_id="d1",
+        user_id=7,
+        is_admin=False,
+    )
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_index_store"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner._is_milvus_backend_enabled"
+)
+def test_cascade_delete_document_confirm_falls_back_to_store_embedding_delete(
+    mock_is_milvus_backend_enabled: MagicMock,
+    mock_get_vector_store: MagicMock,
+    mock_get_conn: MagicMock,
+) -> None:
+    """When raw backend has no embeddings tables, confirm should delete via store fallback."""
+    mock_is_milvus_backend_enabled.return_value = True
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
+    table.count_rows.return_value = 1
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    mock_vector_store = MagicMock()
+    mock_vector_store.delete_document_embeddings.return_value = {"embeddings_m4": 3}
+    mock_get_vector_store.return_value = mock_vector_store
+
+    result = cascade_delete(
+        target="document",
+        collection="c1",
+        doc_id="d1",
+        user_id=7,
+        is_admin=False,
+        preview_only=False,
+        confirm=True,
+    )
+
+    assert result["documents"] == 1
+    assert result["embeddings_m4"] == 3
+    mock_vector_store.delete_document_embeddings.assert_called_once_with(
+        collection_name="c1",
+        doc_id="d1",
+        user_id=7,
+        is_admin=False,
+    )
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_index_store"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner._is_milvus_backend_enabled"
+)
+def test_cascade_delete_collection_preview_falls_back_to_store_embedding_count(
+    mock_is_milvus_backend_enabled: MagicMock,
+    mock_get_vector_store: MagicMock,
+    mock_get_conn: MagicMock,
+) -> None:
+    """Collection preview should use store fallback when raw has no embeddings tables."""
+    mock_is_milvus_backend_enabled.return_value = True
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
+    table.count_rows.return_value = 2
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    mock_vector_store = MagicMock()
+    mock_vector_store.count_embeddings_by_collection.return_value = {"c1": 6, "c2": 9}
+    mock_get_vector_store.return_value = mock_vector_store
+
+    result = cascade_delete(
+        target="collection",
+        collection="c1",
+        user_id=7,
+        is_admin=False,
+        preview_only=True,
+        confirm=False,
+    )
+
+    assert result["documents"] == 2
+    assert result["embeddings_milvus"] == 6
+    mock_vector_store.count_embeddings_by_collection.assert_called_once_with(
+        user_id=7,
+        is_admin=False,
+    )
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_index_store"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner._is_milvus_backend_enabled"
+)
+def test_cascade_delete_collection_confirm_falls_back_to_store_embedding_delete(
+    mock_is_milvus_backend_enabled: MagicMock,
+    mock_get_vector_store: MagicMock,
+    mock_get_conn: MagicMock,
+) -> None:
+    """Collection confirm should use store fallback when raw has no embeddings tables."""
+    mock_is_milvus_backend_enabled.return_value = True
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
+    table.count_rows.return_value = 2
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    mock_vector_store = MagicMock()
+    mock_vector_store.delete_collection_embeddings.return_value = {"embeddings_m4": 5}
+    mock_get_vector_store.return_value = mock_vector_store
+
+    result = cascade_delete(
+        target="collection",
+        collection="c1",
+        user_id=7,
+        is_admin=False,
+        preview_only=False,
+        confirm=True,
+    )
+
+    assert result["documents"] == 2
+    assert result["embeddings_m4"] == 5
+    mock_vector_store.delete_collection_embeddings.assert_called_once_with(
+        collection_name="c1",
+        user_id=7,
+        is_admin=False,
+    )
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
+)
 def test_cleanup_embed_with_multiple_models(mock_get_conn: MagicMock) -> None:
     """Test that cleanup_embed respects model_tag and doesn't touch other models.
 

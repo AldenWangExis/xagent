@@ -6,6 +6,9 @@ import pytest
 
 from xagent.core.tools.core.RAG_tools.core.exceptions import ConfigurationError
 from xagent.core.tools.core.RAG_tools.storage.factory import StorageFactory
+from xagent.core.tools.core.RAG_tools.storage.hybrid_vector_index_store import (
+    HybridVectorIndexStore,
+)
 from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
     LanceDBVectorIndexStore,
 )
@@ -65,11 +68,37 @@ def test_factory_creates_lancedb_store(
     )
 
 
-def test_unimplemented_backend_raises(
+def test_factory_creates_milvus_hybrid_store(
     monkeypatch: pytest.MonkeyPatch, clean_vector_backend_env: None, tmp_path: str
 ) -> None:
     monkeypatch.setenv("LANCEDB_DIR", str(tmp_path))
+    monkeypatch.setenv("MILVUS_URI", "http://milvus.local:19530")
     monkeypatch.setenv(VECTOR_BACKEND_ENV, "milvus")
+    StorageFactory.get_factory().reset_all()
+    store = StorageFactory.get_factory().get_vector_index_store()
+    assert isinstance(store, HybridVectorIndexStore)
+    assert (
+        StorageFactory.get_factory().get_resolved_vector_backend()
+        is VectorBackend.MILVUS
+    )
+
+
+def test_milvus_backend_missing_uri_raises_configuration_error(
+    monkeypatch: pytest.MonkeyPatch, clean_vector_backend_env: None, tmp_path: str
+) -> None:
+    monkeypatch.setenv("LANCEDB_DIR", str(tmp_path))
+    monkeypatch.delenv("MILVUS_URI", raising=False)
+    monkeypatch.setenv(VECTOR_BACKEND_ENV, "milvus")
+    StorageFactory.get_factory().reset_all()
+    with pytest.raises(ConfigurationError, match="MILVUS_URI"):
+        StorageFactory.get_factory().get_vector_index_store()
+
+
+def test_qdrant_backend_remains_unimplemented(
+    monkeypatch: pytest.MonkeyPatch, clean_vector_backend_env: None, tmp_path: str
+) -> None:
+    monkeypatch.setenv("LANCEDB_DIR", str(tmp_path))
+    monkeypatch.setenv(VECTOR_BACKEND_ENV, "qdrant")
     StorageFactory.get_factory().reset_all()
     with pytest.raises(ConfigurationError, match="not implemented"):
         StorageFactory.get_factory().get_vector_index_store()

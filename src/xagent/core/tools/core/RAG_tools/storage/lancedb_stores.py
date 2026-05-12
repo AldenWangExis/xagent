@@ -1626,6 +1626,8 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         top_k: int,
         filters: Optional[FilterExpression] = None,
         vector_column_name: str = "vector",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
     ) -> List[Dict[str, Any]]:
         """Execute vector search using async LanceDB API.
 
@@ -1649,7 +1651,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
             # Build filter expression
             backend_filter = self.build_filter_expression(
-                filters, user_id=None, is_admin=False
+                filters, user_id=user_id, is_admin=is_admin
             )
 
             # Build search query

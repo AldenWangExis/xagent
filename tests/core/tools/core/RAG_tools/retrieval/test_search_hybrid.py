@@ -890,6 +890,51 @@ class TestSearchHybrid:
         assert response.results[0].score >= response.results[1].score
         assert response.results[1].score >= response.results[2].score
 
+    def test_search_hybrid_milvus_backend_degrades_to_dense_with_warning(
+        self, mock_sub_searches: Tuple[Mock, Mock]
+    ) -> None:
+        """Milvus backend should skip sparse step and degrade to dense-only."""
+        search_hybrid_module = self._patch_search_hybrid_module()
+        mock_dense, mock_sparse = mock_sub_searches
+
+        dense_results = [
+            SearchResult(
+                doc_id="d1",
+                chunk_id="c1",
+                text="t1",
+                score=0.9,
+                parse_hash="p1",
+                model_tag="m1",
+                created_at=datetime.datetime.now(),
+            )
+        ]
+        mock_dense.return_value = DenseSearchResponse(
+            results=dense_results,
+            total_count=1,
+            index_status=IndexStatus.INDEX_READY,
+            index_advice="Ready",
+            warnings=[],
+        )
+
+        with patch.object(
+            search_hybrid_module, "_is_milvus_hybrid_backend", return_value=True
+        ):
+            response = search_hybrid(
+                collection="test_col",
+                model_tag="test_model",
+                query_text="query",
+                query_vector=[0.1, 0.2, 0.3],
+                top_k=3,
+            )
+
+        assert response.status == "partial_success"
+        assert response.sparse_count == 0
+        assert response.dense_count == 1
+        assert len(response.results) == 1
+        assert any(w.code == "HYBRID_SPARSE_DEGRADED" for w in response.warnings)
+        mock_dense.assert_called_once()
+        mock_sparse.assert_not_called()
+
     # Removed test_hybrid_search_unsupported_strategy_fallback:
     # Pydantic V2's strict enum validation prevents creating FusionConfig with invalid strategy.
     # This is the desired behavior - invalid strategies are caught at input validation layer.

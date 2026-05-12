@@ -182,6 +182,7 @@ markers = [
   "contract_stub: stable API contract tests using stub embedding or mocks",
   "e2e: end-to-end style tests (may be slow)",
   "requires_network: tests that need outbound network access",
+  "milvus: tests that require a live Milvus instance (gated by MILVUS_URI env var)",
 ]
 
 [tool.mypy]
