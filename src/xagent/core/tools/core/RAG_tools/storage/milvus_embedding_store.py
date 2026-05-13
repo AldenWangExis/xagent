@@ -52,6 +52,7 @@ class MilvusEmbeddingIndexStore:
         self._records: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         self._vector_dimensions: dict[str, int] = {}
         self._known_tables: set[str] = set()
+        self._probe_store: MilvusVectorStore | None = None
 
     @staticmethod
     def _table_name(model_tag: str) -> str:
@@ -146,6 +147,16 @@ class MilvusEmbeddingIndexStore:
             self._stores[table_name] = store
         return table_name, store
 
+    def _ensure_probe_store(self) -> MilvusVectorStore:
+        if self._probe_store is None:
+            self._probe_store = self._store_factory(
+                uri=self._uri,
+                collection_name="__xagent_probe__",
+                token=self._token,
+                db_name=self._db_name,
+            )
+        return self._probe_store
+
     @staticmethod
     def _extract_model_tag_from_table(table_name: str) -> str:
         if table_name.startswith("embeddings_"):
@@ -208,6 +219,99 @@ class MilvusEmbeddingIndexStore:
             return (lambda row: any(pred(row) for pred in predicates)), True
 
         return (lambda _row: False), False
+
+    @staticmethod
+    def _matches_dict_filters(
+        row: dict[str, Any],
+        filters: Optional[dict[str, Any]],
+    ) -> bool:
+        if not filters:
+            return True
+        for key, value in filters.items():
+            current = row.get(key)
+            if isinstance(value, (list, tuple, set)):
+                if current not in set(value):
+                    return False
+                continue
+            if current != value:
+                return False
+        return True
+
+    def _collect_store_filters(
+        self,
+        filters: Optional[FilterExpression],
+    ) -> tuple[dict[str, Any], bool]:
+        if filters is None:
+            return {}, True
+
+        if isinstance(filters, FilterCondition):
+            if filters.operator is FilterOperator.EQ:
+                return {filters.field: filters.value}, True
+            if filters.operator is FilterOperator.IN:
+                values = filters.value
+                if isinstance(values, (list, tuple, set)):
+                    return {filters.field: list(values)}, True
+            return {}, False
+
+        if isinstance(filters, tuple):
+            merged: dict[str, Any] = {}
+            for item in filters:
+                item_filters, supported = self._collect_store_filters(item)
+                if not supported:
+                    return {}, False
+                for key, value in item_filters.items():
+                    if key in merged and merged[key] != value:
+                        return {}, False
+                    merged[key] = value
+            return merged, True
+
+        if isinstance(filters, list):
+            # OR expressions are not representable in provider pushdown dict.
+            return {}, False
+
+        return {}, False
+
+    def _query_rows_for_table(
+        self,
+        table_name: str,
+        *,
+        filters: Optional[dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> tuple[str, MilvusVectorStore, list[tuple[str, dict[str, Any]]]]:
+        model_tag = self._extract_model_tag_from_table(table_name)
+        resolved_table_name, store = self._ensure_store(model_tag)
+
+        query_rows_fn = getattr(store, "query_rows", None)
+        if callable(query_rows_fn):
+            raw_rows = query_rows_fn(filters=filters, output_fields=["id", "metadata"])
+        else:
+            raw_rows = [
+                {"id": item_id, "metadata": row}
+                for item_id, row in self._records.get(resolved_table_name, {}).items()
+            ]
+
+        matched_rows: list[tuple[str, dict[str, Any]]] = []
+        for item in raw_rows:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id", "")).strip()
+            metadata = item.get("metadata")
+            if not item_id or not isinstance(metadata, dict):
+                continue
+            row = dict(metadata)
+            row["user_id"] = self._coerce_user_id(row.get("user_id"))
+            if not self._matches_dict_filters(row, filters):
+                continue
+            if not self._passes_access_control(row, user_id=user_id, is_admin=is_admin):
+                continue
+            matched_rows.append((item_id, row))
+            # Keep a best-effort cache for fallback paths without making
+            # correctness depend on process-local state.
+            self._records[resolved_table_name][item_id] = row
+            self._known_tables.add(resolved_table_name)
+
+        return resolved_table_name, store, matched_rows
 
     @staticmethod
     def _passes_access_control(
@@ -289,6 +393,10 @@ class MilvusEmbeddingIndexStore:
         self._vector_dimensions[table_name] = vector_dim
         self._known_tables.add(table_name)
 
+        normalized_rows: list[dict[str, Any]] = []
+        row_ids: list[tuple[str, str]] = []
+        ids_to_delete: list[str] = []
+
         for record in records:
             row = dict(record)
             row["model"] = row.get("model") or model_tag
@@ -296,20 +404,28 @@ class MilvusEmbeddingIndexStore:
             row["created_at"] = self._normalize_created_at(row.get("created_at"))
             row["user_id"] = self._coerce_user_id(row.get("user_id"))
             row["vector_dimension"] = row.get("vector_dimension") or len(row["vector"])
+            normalized_rows.append(row)
 
             item_id = self._stable_primary_key(row)
             legacy_id = self._legacy_primary_key(row)
-            ids_to_delete = [item_id]
+            row_ids.append((item_id, legacy_id))
+            ids_to_delete.append(item_id)
             if legacy_id != item_id:
                 ids_to_delete.append(legacy_id)
 
-            # Keep writes idempotent by replacing previous identity rows.
-            store.delete_vectors(ids_to_delete)
-            store.add_vectors(
-                vectors=[row["vector"]],
-                ids=[item_id],
-                metadatas=[self._build_storage_metadata(row)],
-            )
+        # Keep writes idempotent by replacing previous identity rows in batch.
+        if ids_to_delete:
+            # Preserve order while removing duplicates.
+            deduped_ids = list(dict.fromkeys(ids_to_delete))
+            store.delete_vectors(deduped_ids)
+
+        store.add_vectors(
+            vectors=[row["vector"] for row in normalized_rows],
+            ids=[item_id for item_id, _ in row_ids],
+            metadatas=[self._build_storage_metadata(row) for row in normalized_rows],
+        )
+
+        for row, (item_id, legacy_id) in zip(normalized_rows, row_ids, strict=False):
             self._records[table_name].pop(legacy_id, None)
             self._records[table_name][item_id] = row
 
@@ -324,7 +440,7 @@ class MilvusEmbeddingIndexStore:
                 ),
                 fts_enabled=False,
             )
-        if self._records.get(table_name):
+        if self.count_rows(table_name, user_id=None, is_admin=True) > 0:
             self._known_tables.add(table_name)
             return IndexResult(status="index_ready", advice=None, fts_enabled=False)
         return IndexResult(
@@ -335,7 +451,7 @@ class MilvusEmbeddingIndexStore:
 
     def open_embeddings_table(self, model_tag: str) -> tuple[None, str]:
         table_name = self._table_name(model_tag)
-        if table_name not in self._known_tables and table_name not in self._records:
+        if table_name not in self.list_table_names():
             raise DatabaseOperationError(
                 f"Embeddings table not found for model_tag='{model_tag}' in Milvus backend."
             )
@@ -387,8 +503,19 @@ class MilvusEmbeddingIndexStore:
         if not supported:
             return []
 
-        # Pull extra candidates and apply contract filters in Python.
-        raw_hits = store.search_vectors(query_vector, top_k=max(top_k * 5, top_k))
+        store_filters, pushdown_supported = self._collect_store_filters(filters)
+        if not is_admin and user_id is not None:
+            # Tenant scope can be pushed down for narrower candidate selection.
+            store_filters = dict(store_filters)
+            store_filters["user_id"] = user_id
+            pushdown_supported = True
+
+        candidate_top_k = top_k if pushdown_supported else max(top_k * 5, top_k)
+        raw_hits = store.search_vectors(
+            query_vector,
+            top_k=candidate_top_k,
+            filters=store_filters if pushdown_supported else None,
+        )
         results: list[dict[str, Any]] = []
         for hit in raw_hits:
             row = self._resolve_row_from_hit(table_name=resolved_table_name, hit=hit)
@@ -408,7 +535,18 @@ class MilvusEmbeddingIndexStore:
         names = set(self._known_tables)
         names.update(self._records.keys())
         names.update(self._stores.keys())
-        return sorted(names)
+        try:
+            probe_store = self._ensure_probe_store()
+            list_collections = getattr(probe_store, "list_collections", None)
+            if callable(list_collections):
+                for collection_name in list_collections():
+                    normalized = str(collection_name).strip()
+                    if normalized.startswith("embeddings_"):
+                        names.add(normalized)
+        except Exception:  # noqa: BLE001
+            # Best-effort discovery only; callers still get cached names.
+            pass
+        return sorted(name for name in names if name.startswith("embeddings_"))
 
     def get_vector_dimension(self, table_name: str) -> Optional[int]:
         return self._vector_dimensions.get(table_name)
@@ -422,12 +560,14 @@ class MilvusEmbeddingIndexStore:
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> Iterator[Any]:
+        _resolved_table_name, _store, matched_rows = self._query_rows_for_table(
+            table_name,
+            filters=filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
         rows = []
-        for row in self._records.get(table_name, {}).values():
-            if not self._passes_access_control(row, user_id=user_id, is_admin=is_admin):
-                continue
-            if filters and any(row.get(k) != v for k, v in filters.items()):
-                continue
+        for _item_id, row in matched_rows:
             if columns:
                 rows.append({key: row.get(key) for key in columns})
             else:
@@ -449,14 +589,13 @@ class MilvusEmbeddingIndexStore:
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> int:
-        total = 0
-        for row in self._records.get(table_name, {}).values():
-            if not self._passes_access_control(row, user_id=user_id, is_admin=is_admin):
-                continue
-            if filters and any(row.get(k) != v for k, v in filters.items()):
-                continue
-            total += 1
-        return total
+        _resolved_table_name, _store, matched_rows = self._query_rows_for_table(
+            table_name,
+            filters=filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        return len(matched_rows)
 
     def delete_collection_embeddings(
         self,
@@ -465,19 +604,22 @@ class MilvusEmbeddingIndexStore:
         is_admin: bool,
     ) -> dict[str, int]:
         deleted: dict[str, int] = {}
-        for table_name, records in self._records.items():
-            item_ids = [
-                item_id
-                for item_id, row in records.items()
-                if row.get("collection") == collection_name
-                and self._passes_access_control(row, user_id=user_id, is_admin=is_admin)
-            ]
+        for table_name in self.list_table_names():
+            resolved_table_name, store, matched_rows = self._query_rows_for_table(
+                table_name,
+                filters={"collection": collection_name},
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            item_ids = [item_id for item_id, _row in matched_rows]
             if not item_ids:
                 continue
-            self._stores[table_name].delete_vectors(item_ids)
-            for item_id in item_ids:
-                records.pop(item_id, None)
-            deleted[table_name] = len(item_ids)
+            store.delete_vectors(item_ids)
+            records = self._records.get(resolved_table_name)
+            if records is not None:
+                for item_id in item_ids:
+                    records.pop(item_id, None)
+            deleted[resolved_table_name] = len(item_ids)
         return deleted
 
     def delete_document_embeddings(
@@ -489,20 +631,22 @@ class MilvusEmbeddingIndexStore:
         is_admin: bool,
     ) -> dict[str, int]:
         deleted: dict[str, int] = {}
-        for table_name, records in self._records.items():
-            item_ids = [
-                item_id
-                for item_id, row in records.items()
-                if row.get("collection") == collection_name
-                and row.get("doc_id") == doc_id
-                and self._passes_access_control(row, user_id=user_id, is_admin=is_admin)
-            ]
+        for table_name in self.list_table_names():
+            resolved_table_name, store, matched_rows = self._query_rows_for_table(
+                table_name,
+                filters={"collection": collection_name, "doc_id": doc_id},
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            item_ids = [item_id for item_id, _row in matched_rows]
             if not item_ids:
                 continue
-            self._stores[table_name].delete_vectors(item_ids)
-            for item_id in item_ids:
-                records.pop(item_id, None)
-            deleted[table_name] = len(item_ids)
+            store.delete_vectors(item_ids)
+            records = self._records.get(resolved_table_name)
+            if records is not None:
+                for item_id in item_ids:
+                    records.pop(item_id, None)
+            deleted[resolved_table_name] = len(item_ids)
         return deleted
 
     def rename_collection_embeddings(
@@ -529,7 +673,6 @@ class MilvusEmbeddingIndexStore:
 
             if not old_ids:
                 continue
-
             self._stores[table_name].delete_vectors(old_ids)
             for row in matching_rows:
                 model_tag = str(row.get("model", ""))
@@ -545,10 +688,13 @@ class MilvusEmbeddingIndexStore:
         is_admin: bool,
     ) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
-        for records in self._records.values():
-            for row in records.values():
-                if not self._passes_access_control(row, user_id=user_id, is_admin=is_admin):
-                    continue
+        for table_name in self.list_table_names():
+            _resolved_table_name, _store, matched_rows = self._query_rows_for_table(
+                table_name,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            for _item_id, row in matched_rows:
                 collection_name = str(row.get("collection", "")).strip()
                 if collection_name:
                     counts[collection_name] += 1
@@ -563,11 +709,12 @@ class MilvusEmbeddingIndexStore:
         is_admin: bool,
     ) -> int:
         count = 0
-        for records in self._records.values():
-            for row in records.values():
-                if row.get("collection") != collection_name or row.get("doc_id") != doc_id:
-                    continue
-                if not self._passes_access_control(row, user_id=user_id, is_admin=is_admin):
-                    continue
-                count += 1
+        for table_name in self.list_table_names():
+            _resolved_table_name, _store, matched_rows = self._query_rows_for_table(
+                table_name,
+                filters={"collection": collection_name, "doc_id": doc_id},
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            count += len(matched_rows)
         return count

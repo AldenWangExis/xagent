@@ -135,9 +135,61 @@ class MilvusVectorStore(VectorStore):
             return True
 
         for key, value in filters.items():
-            if metadata.get(key) != value:
+            current = metadata.get(key)
+            if isinstance(value, (list, tuple, set)):
+                if current not in set(value):
+                    return False
+                continue
+            if current != value:
                 return False
         return True
+
+    @staticmethod
+    def _escape_filter_key(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _format_filter_literal(value: Any) -> Optional[str]:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+        return None
+
+    def _build_filter_expression(self, filters: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not filters:
+            return None
+
+        clauses: list[str] = []
+        for key, value in filters.items():
+            escaped_key = self._escape_filter_key(str(key))
+            metadata_field = f'metadata["{escaped_key}"]'
+            if isinstance(value, (list, tuple, set)):
+                values = list(value)
+                if not values:
+                    return None
+                literals: list[str] = []
+                for item in values:
+                    literal = self._format_filter_literal(item)
+                    if literal is None:
+                        return None
+                    literals.append(literal)
+                clauses.append(f"{metadata_field} in [{', '.join(literals)}]")
+                continue
+
+            literal = self._format_filter_literal(value)
+            if literal is None:
+                return None
+            clauses.append(f"{metadata_field} == {literal}")
+
+        if not clauses:
+            return None
+        return " and ".join(f"({clause})" for clause in clauses)
 
     def add_vectors(
         self,
@@ -206,21 +258,38 @@ class MilvusVectorStore(VectorStore):
         if not self._client.has_collection(self._collection_name):
             return []
 
-        # Fetch more candidates when filters are provided, then filter in Python.
-        limit = max(top_k, top_k * 5 if filters else top_k)
+        filter_expr = self._build_filter_expression(filters)
+        # If filter pushdown is unavailable, fetch extra candidates and filter in Python.
+        limit = top_k if filter_expr else max(top_k, top_k * 5 if filters else top_k)
         # Bounded consistency keeps latency predictable on freshly-inserted data.
         # Strong waits for QueryNode to catch up to the latest write timestamp,
         # which can hang for tens of seconds on a standalone Milvus before the
         # growing segment is loaded — see Milvus issue tracker for v2.6 stalls
         # on Strong + small inserts. Bounded is the official default for dense
         # vector search and is sufficient for xagent's KB semantics.
-        raw = self._client.search(
-            collection_name=self._collection_name,
-            data=[query_vector],
-            limit=limit,
-            output_fields=["metadata"],
-            consistency_level="Bounded",
-        )
+        search_kwargs: Dict[str, Any] = {
+            "collection_name": self._collection_name,
+            "data": [query_vector],
+            "limit": limit,
+            "output_fields": ["metadata"],
+            "consistency_level": "Bounded",
+        }
+        if filter_expr:
+            search_kwargs["filter"] = filter_expr
+
+        try:
+            raw = self._client.search(**search_kwargs)
+        except Exception as exc:
+            if not filter_expr:
+                raise
+            logger.warning("Milvus filter pushdown failed, fallback to client filtering: %s", exc)
+            raw = self._client.search(
+                collection_name=self._collection_name,
+                data=[query_vector],
+                limit=max(top_k, top_k * 5 if filters else top_k),
+                output_fields=["metadata"],
+                consistency_level="Bounded",
+            )
 
         hits = raw[0] if raw else []
         results: List[Dict[str, Any]] = []
@@ -246,6 +315,86 @@ class MilvusVectorStore(VectorStore):
                 break
 
         return results
+
+    def query_rows(
+        self,
+        *,
+        filters: Optional[Dict[str, Any]] = None,
+        output_fields: Optional[List[str]] = None,
+        limit: int = 20000,
+    ) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
+        if not self._client.has_collection(self._collection_name):
+            return []
+
+        query_fn = getattr(self._client, "query", None)
+        if not callable(query_fn):
+            return []
+
+        fields = output_fields or ["id", "metadata"]
+        filter_expr = self._build_filter_expression(filters)
+        query_kwargs: Dict[str, Any] = {
+            "collection_name": self._collection_name,
+            "output_fields": fields,
+            "limit": limit,
+        }
+        if filter_expr:
+            query_kwargs["filter"] = filter_expr
+
+        try:
+            raw_rows = query_fn(**query_kwargs)
+        except Exception as exc:
+            if not filter_expr:
+                raise
+            logger.warning(
+                "Milvus query filter pushdown failed, fallback to client filtering: %s",
+                exc,
+            )
+            raw_rows = query_fn(
+                collection_name=self._collection_name,
+                output_fields=fields,
+                limit=limit,
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for item in raw_rows or []:
+            if not isinstance(item, dict):
+                continue
+            entity = item.get("entity")
+            if isinstance(entity, dict):
+                item_id = item.get("id", entity.get("id"))
+                metadata = entity.get("metadata", item.get("metadata", {}))
+            else:
+                item_id = item.get("id")
+                metadata = item.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if not self._matches_filters(metadata, filters):
+                continue
+            rows.append(
+                {
+                    "id": str(item_id) if item_id is not None else "",
+                    "metadata": metadata,
+                }
+            )
+        return rows
+
+    def list_collections(self) -> List[str]:
+        list_fn = getattr(self._client, "list_collections", None)
+        if callable(list_fn):
+            try:
+                raw = list_fn()
+                if isinstance(raw, str):
+                    return [raw]
+                if isinstance(raw, (list, tuple, set)):
+                    return [str(name) for name in raw]
+                return [str(name) for name in list(raw)]
+            except Exception as exc:
+                logger.debug("Failed to list Milvus collections: %s", exc)
+        if self._client.has_collection(self._collection_name):
+            return [self._collection_name]
+        return []
 
     def clear(self) -> None:
         if not self._client.has_collection(self._collection_name):

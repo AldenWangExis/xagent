@@ -20,9 +20,11 @@ class _FakeMilvusVectorStore:
     collection_name: str
     token: str | None = None
     db_name: str | None = None
+    registry: Dict[str, "_FakeMilvusVectorStore"] | None = None
     rows: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     vector_dim: int | None = None
     delete_batches: List[List[str]] = field(default_factory=list)
+    search_filters_history: List[Dict[str, Any] | None] = field(default_factory=list)
 
     def add_vectors(
         self,
@@ -54,15 +56,65 @@ class _FakeMilvusVectorStore:
         top_k: int = 5,
         filters: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
+        self.search_filters_history.append(dict(filters) if filters else None)
         results: List[Dict[str, Any]] = []
         for item_id, row in self.rows.items():
             metadata = row["metadata"]
-            if filters and any(metadata.get(key) != value for key, value in filters.items()):
-                continue
+            if filters:
+                matched = True
+                for key, value in filters.items():
+                    current = metadata.get(key)
+                    if isinstance(value, (list, tuple, set)):
+                        if current not in set(value):
+                            matched = False
+                            break
+                    elif current != value:
+                        matched = False
+                        break
+                if not matched:
+                    continue
             dist = sqrt(sum((a - b) ** 2 for a, b in zip(row["vector"], query_vector)))
             results.append({"id": item_id, "score": dist, "metadata": metadata})
         results.sort(key=lambda item: item["score"])
         return results[:top_k]
+
+    def query_rows(
+        self,
+        *,
+        filters: Dict[str, Any] | None = None,
+        output_fields: List[str] | None = None,
+        limit: int = 20000,
+    ) -> List[Dict[str, Any]]:
+        del output_fields
+        if limit <= 0:
+            return []
+        results: List[Dict[str, Any]] = []
+        for item_id, row in self.rows.items():
+            metadata = row.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if filters:
+                matched = True
+                for key, value in filters.items():
+                    current = metadata.get(key)
+                    if isinstance(value, (list, tuple, set)):
+                        if current not in set(value):
+                            matched = False
+                            break
+                    elif current != value:
+                        matched = False
+                        break
+                if not matched:
+                    continue
+            results.append({"id": item_id, "metadata": metadata})
+            if len(results) >= limit:
+                break
+        return results
+
+    def list_collections(self) -> List[str]:
+        if self.registry is not None:
+            return sorted(self.registry.keys())
+        return [self.collection_name]
 
     def clear(self) -> None:
         self.rows.clear()
@@ -88,6 +140,7 @@ def fake_store_factory() -> tuple[Any, Dict[str, _FakeMilvusVectorStore]]:
                 collection_name=collection_name,
                 token=token,
                 db_name=db_name,
+                registry=stores,
             )
         return stores[collection_name]
 
@@ -240,6 +293,23 @@ def test_upsert_deletes_legacy_and_new_keys(
     }
 
 
+def test_upsert_batches_delete_and_insert_for_multiple_rows(
+    store: Any,
+    fake_store_factory: tuple[Any, Dict[str, _FakeMilvusVectorStore]],
+) -> None:
+    _, stores = fake_store_factory
+    rows = [
+        _record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2]),
+        _record(collection="kb1", doc_id="d1", chunk_id="c2", vector=[0.2, 0.3]),
+    ]
+
+    store.upsert_embeddings("text-embedding-v4", rows)
+
+    target_store = stores["embeddings_text_embedding_v4"]
+    assert len(target_store.delete_batches) == 1
+    assert len(target_store.delete_batches[0]) == 4
+
+
 def test_search_works_when_local_cache_is_empty(store: Any) -> None:
     store.upsert_embeddings(
         "text-embedding-v4",
@@ -258,6 +328,71 @@ def test_search_works_when_local_cache_is_empty(store: Any) -> None:
     assert results[0]["doc_id"] == "d1"
     assert isinstance(results[0]["metadata"], str)
     assert '"lang": "zh"' in results[0]["metadata"]
+
+
+def test_count_rows_works_when_local_cache_is_empty(store: Any) -> None:
+    store.upsert_embeddings(
+        "text-embedding-v4",
+        [_record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2])],
+    )
+    store._records.clear()
+
+    count = store.count_rows(
+        "embeddings_text_embedding_v4",
+        filters={"collection": "kb1"},
+        user_id=1,
+        is_admin=False,
+    )
+    assert count == 1
+
+
+def test_delete_document_embeddings_works_when_local_cache_is_empty(store: Any) -> None:
+    store.upsert_embeddings(
+        "text-embedding-v4",
+        [
+            _record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2]),
+            _record(collection="kb1", doc_id="d2", chunk_id="c2", vector=[0.1, 0.2]),
+        ],
+    )
+    store._records.clear()
+
+    deleted = store.delete_document_embeddings(
+        collection_name="kb1",
+        doc_id="d1",
+        user_id=1,
+        is_admin=False,
+    )
+    assert deleted["embeddings_text_embedding_v4"] == 1
+
+    remaining_count = store.count_rows(
+        "embeddings_text_embedding_v4",
+        filters={"collection": "kb1"},
+        user_id=1,
+        is_admin=False,
+    )
+    assert remaining_count == 1
+
+
+def test_iter_batches_works_when_local_cache_is_empty(store: Any) -> None:
+    store.upsert_embeddings(
+        "text-embedding-v4",
+        [_record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2])],
+    )
+    store._records.clear()
+
+    batches = list(
+        store.iter_batches(
+            "embeddings_text_embedding_v4",
+            columns=["collection", "doc_id"],
+            batch_size=100,
+            filters={"collection": "kb1"},
+            user_id=1,
+            is_admin=False,
+        )
+    )
+    assert len(batches) == 1
+    rows = batches[0].to_pylist()
+    assert rows == [{"collection": "kb1", "doc_id": "d1"}]
 
 
 def test_mixed_vector_dimensions_rejected(store: Any) -> None:
@@ -286,6 +421,31 @@ def test_collection_filter_applies(store: Any) -> None:
     )
     assert len(results) == 1
     assert results[0]["doc_id"] == "d1"
+
+
+def test_search_pushes_supported_filters_to_vector_store(
+    store: Any,
+    fake_store_factory: tuple[Any, Dict[str, _FakeMilvusVectorStore]],
+) -> None:
+    _, stores = fake_store_factory
+    store.upsert_embeddings(
+        "text-embedding-v4",
+        [
+            _record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2]),
+            _record(collection="kb2", doc_id="d2", chunk_id="c2", vector=[0.1, 0.2]),
+        ],
+    )
+    _ = store.search_vectors_by_model(
+        "text-embedding-v4",
+        [0.1, 0.2],
+        top_k=5,
+        filters=FilterCondition("collection", FilterOperator.EQ, "kb1"),
+        is_admin=True,
+    )
+
+    target_store = stores["embeddings_text_embedding_v4"]
+    assert target_store.search_filters_history
+    assert target_store.search_filters_history[-1] == {"collection": "kb1"}
 
 
 def test_non_admin_user_filter_is_enforced(store: Any) -> None:
