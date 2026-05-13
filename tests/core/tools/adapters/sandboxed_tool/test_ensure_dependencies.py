@@ -17,6 +17,8 @@ from xagent.core.tools.adapters.vibe.sandboxed_tool.sandbox_config import (
     sandbox_config,
 )
 from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
+    SANDBOX_BASE_DEPENDENCIES,
+    SandboxDependencyManager,
     SandboxedToolWrapper,
 )
 
@@ -42,6 +44,9 @@ def _make_sandbox(name: str = "sandbox-1") -> MagicMock:
 class _DefaultTool(FakeBaseTool):
     """Fake tool with no extra runtime packages."""
 
+    def __init__(self) -> None:
+        pass
+
     @property
     def name(self) -> str:
         return "default_tool"
@@ -50,12 +55,11 @@ class _DefaultTool(FakeBaseTool):
 @pytest.fixture(autouse=True)
 def _clear_class_state():
     """Reset class-level state between tests."""
-    SandboxedToolWrapper._sandbox_deps_installed = {}
-    SandboxedToolWrapper._sandbox_deps_locks = {}
-    SandboxedToolWrapper._locks_lock = asyncio.Lock()
+    SandboxDependencyManager.reset()
+    SandboxDependencyManager._locks_lock = asyncio.Lock()
     yield
-    SandboxedToolWrapper._sandbox_deps_installed = {}
-    SandboxedToolWrapper._sandbox_deps_locks = {}
+    SandboxDependencyManager.reset()
+    SandboxDependencyManager._locks_lock = asyncio.Lock()
 
 
 class TestEnsureDependencies:
@@ -71,7 +75,9 @@ class TestEnsureDependencies:
 
         sandbox.write_file.assert_called_once()
         sandbox.exec.assert_called_once()
-        assert SandboxedToolWrapper._sandbox_deps_installed.get("sb-install") is True
+        assert SandboxDependencyManager._sandbox_installed_requirements.get(
+            "sb-install"
+        ) == set(SANDBOX_BASE_DEPENDENCIES)
 
     @pytest.mark.asyncio
     async def test_second_call_skips(self):
@@ -130,7 +136,7 @@ class TestEnsureDependencies:
         with pytest.raises(RuntimeError, match="Dependency installation failed"):
             await wrapper._ensure_dependencies()
 
-        assert "sb-fail" not in SandboxedToolWrapper._sandbox_deps_installed
+        assert "sb-fail" not in SandboxDependencyManager._sandbox_installed_requirements
 
     @pytest.mark.asyncio
     async def test_no_extra_packages_still_installs_base(self):
@@ -140,7 +146,9 @@ class TestEnsureDependencies:
 
         await wrapper._ensure_dependencies()
 
-        assert SandboxedToolWrapper._sandbox_deps_installed.get("sb-base") is True
+        assert SandboxDependencyManager._sandbox_installed_requirements.get(
+            "sb-base"
+        ) == set(SANDBOX_BASE_DEPENDENCIES)
         sandbox.exec.assert_called_once()
 
     @pytest.mark.asyncio
@@ -167,4 +175,6 @@ class TestEnsureDependencies:
 
         # Only one pip install should have happened
         assert call_count == 1
-        assert SandboxedToolWrapper._sandbox_deps_installed.get("sb-concurrent") is True
+        assert SandboxDependencyManager._sandbox_installed_requirements.get(
+            "sb-concurrent"
+        ) == set(SANDBOX_BASE_DEPENDENCIES)

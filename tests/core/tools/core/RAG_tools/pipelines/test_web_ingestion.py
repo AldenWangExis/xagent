@@ -130,6 +130,48 @@ class TestWebIngestionPipeline:
         assert "Crawl failed" in result.message
 
     @pytest.mark.asyncio
+    async def test_error_message_uses_first_failed_url(
+        self, crawl_config, ingestion_config
+    ):
+        """When the crawler returns normally but every URL was blocked
+        (e.g. all 403s), the result message must reflect the actual
+        failure -- NOT the misleading 'Web ingestion completed' string
+        that previously appeared with status=error.
+
+        Regression test for the UX bug where the frontend showed a red
+        error toast carrying "completed: 0 documents" text whenever a
+        site was WAF-blocked.
+        """
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            # Crawler returns successfully but with empty results +
+            # populated failed_urls (this is the path that previously
+            # produced the misleading message)
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=[])
+            mock_crawler.failed_urls = {
+                "https://www.detrack.com": "HTTP 403",
+                "https://www.detrack.com/about": "HTTP 403",
+            }
+            mock_crawler.total_urls_found = 0
+            mock_crawler_class.return_value = mock_crawler
+
+            result = await run_web_ingestion(
+                collection="test_collection",
+                crawl_config=crawl_config,
+                ingestion_config=ingestion_config,
+            )
+
+        assert result.status == "error"
+        assert result.documents_created == 0
+        # The message must surface the actual failure, not "completed"
+        assert "completed" not in result.message.lower()
+        assert result.message.startswith("Web ingestion failed:")
+        assert "https://www.detrack.com" in result.message
+        assert "HTTP 403" in result.message
+
+    @pytest.mark.asyncio
     async def test_partial_ingestion_failure(self, crawl_config, ingestion_config):
         """Test handling of partial ingestion failures."""
         # Mock crawl results
@@ -205,6 +247,10 @@ class TestWebIngestionPipeline:
         assert result.pages_crawled == 2
         assert result.documents_created == 1
         assert result.pages_failed == 1
+        assert "partial" in result.message.lower()
+        assert "completed" not in result.message.lower()
+        assert "https://example.com/page2" in result.message
+        assert "Parse failed" in result.message
         assert len(result.failed_urls) == 1
         assert "https://example.com/page2" in result.failed_urls
 
@@ -516,10 +562,10 @@ class TestWebIngestionFileHandler:
                 assert call_kwargs["source_path"] == "/fake/persistent/path.md"
 
     @pytest.mark.asyncio
-    async def test_file_handler_failure_fallback_to_temp_file(
+    async def test_file_handler_failure_does_not_fallback_to_temp_file(
         self, crawl_config, ingestion_config
     ):
-        """Test that if file_handler fails, it falls back to temporary file."""
+        """Test that file_handler failures do not ingest temporary files."""
         mock_crawl_results = [
             MagicMock(
                 url="https://example.com/page1",
@@ -564,7 +610,6 @@ class TestWebIngestionFileHandler:
                 "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.run_document_ingestion",
                 return_value=mock_ingestion_result,
             ) as mock_ingest:
-                # Should not raise exception, should fall back to temp file
                 result = await run_web_ingestion(
                     collection="test_collection",
                     crawl_config=crawl_config,
@@ -572,16 +617,12 @@ class TestWebIngestionFileHandler:
                     file_handler=failing_file_handler,
                 )
 
-                # Verify ingestion still succeeded
-                assert result.status == "success"
-                assert result.documents_created == 1
+                assert result.status == "error"
+                assert result.documents_created == 0
+                assert result.pages_failed == 1
+                assert "https://example.com/page1" in result.failed_urls
 
-                # Verify run_document_ingestion was called with temp file (no file_id)
-                mock_ingest.assert_called_once()
-                call_kwargs = mock_ingest.call_args[1]
-                assert call_kwargs["file_id"] is None
-                # source_path should be the temporary file path
-                assert "xagent_web_ingest" in call_kwargs["source_path"]
+                mock_ingest.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_omitted_scope_falls_back_to_context(

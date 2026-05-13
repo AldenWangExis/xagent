@@ -208,6 +208,18 @@ async def get_available_tools(
             self.credentials: Any | None = None
             self.user = user
 
+    # Get or create user sandbox for list mcp tools
+    from ..sandbox_manager import get_sandbox_manager
+
+    sandbox_manager = get_sandbox_manager()
+    sandbox = None
+    if sandbox_manager:
+        user_id = int(current_user.id)
+        try:
+            sandbox = await sandbox_manager.get_or_create_sandbox("user", str(user_id))
+        except Exception as e:
+            logger.error(f"Failed to create sandbox for user {user_id}: {e}")
+
     # Create WebToolConfig, now includes MCP tools
     # Note: llm=None for tool listing (display only, no execution)
     current_user_id = _require_user_id(current_user)
@@ -224,6 +236,7 @@ async def get_available_tools(
         include_mcp_tools=False,  # Disable MCP tools listing to avoid slow loading
         task_id="tools_list",  # Generic task ID for tool listing
         browser_tools_enabled=True,  # Enable browser automation tools
+        sandbox=sandbox,
     )
 
     # Use ToolFactory.create_all_tools() to get all tools

@@ -69,6 +69,7 @@ class ContextBuilder:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         file_info: Optional[List[Dict[str, Any]]] = None,
         uploaded_files: Optional[List[str]] = None,
+        is_builder_context: bool = False,
     ) -> List[Dict[str, str]]:
         """
         Build context messages for a step based on its dependencies.
@@ -84,6 +85,7 @@ class ContextBuilder:
             conversation_history: Optional conversation history from user interactions
             file_info: Optional list of uploaded file information dictionaries
             uploaded_files: Optional list of uploaded file identifiers
+            is_builder_context: Whether this step runs inside an agent-builder skill
 
         Returns:
             List of messages forming the context for this step
@@ -99,18 +101,48 @@ class ContextBuilder:
         ]
 
         # Add file information if available
-        if uploaded_files and file_info:
+        if file_info:
+            file_ids_str = ", ".join(
+                f'"{f.get("file_id")}"' for f in file_info if f.get("file_id")
+            )
+
+            # In agent-builder mode omit absolute paths to avoid confusion with file_ids.
+            # In normal mode include absolute paths so standard file tools can locate the files.
+            file_list_lines = []
+            if (
+                not is_builder_context
+                and uploaded_files
+                and len(uploaded_files) == len(file_info)
+            ):
+                for f, fpath in zip(file_info, uploaded_files):
+                    file_list_lines.append(
+                        f"- {f.get('name', 'unknown')} ({f.get('size', 0)} bytes, {f.get('type', 'unknown')})\n  Absolute Path: {fpath}"
+                    )
+            else:
+                for f in file_info:
+                    file_list_lines.append(
+                        f"- {f.get('name', 'unknown')} ({f.get('size', 0)} bytes, {f.get('type', 'unknown')})"
+                    )
+
+            file_list_str = "\n".join(file_list_lines)
+
+            # Build content message that supports both generic file processing and KB creation
+            content_msg = f"## UPLOADED FILES: {len(file_info)} files available for processing:\n{file_list_str}\n\n"
+
+            if is_builder_context:
+                content_msg += (
+                    f"Use these exact file_ids (UUIDs) with `create_knowledge_base_from_file`:\n"
+                    f"  file_ids = [{file_ids_str}]\n\n"
+                    "IMPORTANT: Use the exact UUIDs listed above as file_ids. Do NOT use file paths as file_ids."
+                )
+            else:
+                # Generic instruction for normal tasks
+                content_msg += "NOTE: Use the 'Absolute Path' provided above when reading or analyzing these files with standard file tools."
+
             messages.append(
                 {
                     "role": "user",
-                    "content": f"UPLOADED FILES: {len(uploaded_files)} files available for processing:\n"
-                    + "\n".join(
-                        [
-                            f"- {f.get('name', 'unknown')} ({f.get('size', 0)} bytes, {f.get('type', 'unknown')}) - File ID: {file_id}"
-                            for f, file_id in zip(file_info, uploaded_files)
-                        ]
-                    )
-                    + "\nThese files have been uploaded and are available in the workspace.",
+                    "content": content_msg,
                 }
             )
 

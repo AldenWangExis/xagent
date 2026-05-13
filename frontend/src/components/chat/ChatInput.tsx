@@ -47,6 +47,13 @@ interface ChatInputProps {
   hideFileUpload?: boolean;
   compact?: boolean;
   autoFocus?: boolean;
+  minHeightClass?: string;
+  promptHighlightTerms?: string[];
+  selectedAgents?: Array<{
+    id: number | string;
+    name: string;
+  }>;
+  onRemoveSelectedAgent?: (agentId: number | string) => void;
 }
 
 export function ChatInput({
@@ -65,7 +72,11 @@ export function ChatInput({
   readOnlyConfig = false,
   hideFileUpload = false,
   compact = false,
-  autoFocus = false
+  autoFocus = false,
+  minHeightClass = "min-h-[130px]",
+  promptHighlightTerms = [],
+  selectedAgents = [],
+  onRemoveSelectedAgent,
 }: ChatInputProps) {
   const router = useRouter();
   const [internalMessage, setInternalMessage] = useState("");
@@ -96,27 +107,63 @@ export function ChatInput({
     }
   }, [autoFocus]);
 
-  const handleInput = () => {
-    const editor = editorRef.current;
-    if (!editor) return;
+  const escapeHtml = (value: string) =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
 
-    // Serialize content: replace chips with markdown link containing file:// scheme
+  const replaceFirstOccurrence = (source: string, search: string, replacement: string) => {
+    const index = source.indexOf(search);
+    if (index === -1) return source;
+    return source.slice(0, index) + replacement + source.slice(index + search.length);
+  };
+
+  const applyPromptHighlights = (html: string, highlightTerms: string[]) => {
+    return highlightTerms.reduce((currentHtml, term) => {
+      const escapedTerm = escapeHtml(term);
+      const highlightedTerm = `<span data-prompt-highlight="true" class="font-medium" style="color:#3b5cff;text-decoration-line:underline;text-decoration-style:dashed;text-decoration-color:#3b5cff;text-underline-offset:4px;">${escapedTerm}</span>`;
+      return replaceFirstOccurrence(currentHtml, escapedTerm, highlightedTerm);
+    }, html);
+  };
+
+  const serializeEditorContent = (editor: HTMLElement) => {
     const clone = editor.cloneNode(true) as HTMLElement;
-    const chips = clone.querySelectorAll('[data-file-path]');
-    chips.forEach((chip) => {
-      const path = chip.getAttribute('data-file-path');
-      const fileId = chip.getAttribute('data-file-id');
-      const filename = chip.getAttribute('data-filename') || path?.split('/').pop() || path;
+    const chips = clone.querySelectorAll("[data-file-path]");
 
-      // Use fileId if available, otherwise path (fallback)
+    chips.forEach((chip) => {
+      const path = chip.getAttribute("data-file-path");
+      const fileId = chip.getAttribute("data-file-id");
+      const filename =
+        chip.getAttribute("data-filename") || path?.split("/").pop() || path;
       const id = fileId || path;
       chip.replaceWith(document.createTextNode(`[${filename}](file://${id})`));
     });
 
-    // Use innerText to preserve newlines
-    let text = clone.innerText;
-    // Remove zero-width spaces if any (sometimes added by contentEditable)
-    text = text.replace(/\u200B/g, '');
+    clone.querySelectorAll("br").forEach((lineBreak) => {
+      lineBreak.replaceWith(document.createTextNode("\n"));
+    });
+
+    clone.querySelectorAll("div, p").forEach((block) => {
+      if (block.lastChild?.textContent?.endsWith("\n")) {
+        return;
+      }
+      block.appendChild(document.createTextNode("\n"));
+    });
+
+    return (clone.textContent || "")
+      .replace(/\u200B/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/\n$/, "");
+  };
+
+  const handleInput = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const text = serializeEditorContent(editor);
 
     if (isControlled) {
       onInputChange?.(text);
@@ -494,73 +541,36 @@ export function ChatInput({
       if (editor.innerHTML !== "") {
         editor.innerHTML = "";
       }
-    } else if (document.activeElement !== editor && editor.innerText.trim() === "") {
-      // Restore file:// links
-      let html = message.replace(/\[([^\]]+)\]\(file:\/\/([^)]+)\)/g, (match, filename, id) => {
-        // We use the ID as the path since we don't have the real path anymore
-        return createFileChipHTML(id, id, filename);
-      });
-      // Fallback for old backticked messages to not break existing chat history
-      html = html.replace(/`([^`]+)`/g, (match, path) => {
-        return createFileChipHTML(path);
-      });
-      editor.innerHTML = html;
-    }
-  }, [message]);
+    } else if (document.activeElement !== editor) {
+      const currentText = serializeEditorContent(editor);
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  };
+      if (message !== currentText) {
+        let html = escapeHtml(message);
+
+        // Restore file:// links
+        html = html.replace(/\[([^\]]+)\]\(file:\/\/([^)]+)\)/g, (_match, filename, id) => {
+          // We use the ID as the path since we don't have the real path anymore
+          return createFileChipHTML(id, id, filename);
+        });
+        // Fallback for old backticked messages to not break existing chat history
+        html = html.replace(/`([^`]+)`/g, (_match, path) => {
+          return createFileChipHTML(path);
+        });
+        html = applyPromptHighlights(html, promptHighlightTerms);
+        html = html.replace(/\n/g, "<br>");
+
+        editor.innerHTML = html;
+      }
+    }
+  }, [message, promptHighlightTerms]);
 
   return (
     <div className="space-y-3">
-      {/* File list */}
-      {files.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {files.map((file, index) => {
-            const isUploading = uploadingFiles.has(`${file.name}-${file.lastModified}`);
-            return (
-              <div
-                key={index}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-2 bg-secondary/80 rounded-xl text-sm animate-fade-in-scale border border-border/50 hover:border-primary/30 transition-colors",
-                  isUploading && "opacity-70"
-                )}
-              >
-                <div className="w-6 h-6 rounded-lg bg-primary/10 flex items-center justify-center">
-                  {isUploading ? (
-                    <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
-                  ) : (
-                    <FileIcon className="w-3.5 h-3.5 text-primary" />
-                  )}
-                </div>
-                <span className="truncate max-w-[120px] font-medium text-foreground/90">{file.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  {formatFileSize(file.size)}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => removeFile(index)}
-                  className={cn(
-                    "ml-1 p-0.5 rounded-md transition-colors",
-                    isUploading
-                      ? "text-muted-foreground/50 hover:text-foreground hover:bg-secondary"
-                      : "text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                  )}
-                  title={isUploading ? t("common.cancel") : t("common.remove")}
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
       {/* Input area */}
-      <div className="relative" ref={containerRef}>
+      <div
+        className={cn("relative", selectedAgents.length > 0 && "pt-9")}
+        ref={containerRef}
+      >
         <FileMentionDropdown
           show={fileMention.showFilePicker}
           isLoading={fileMention.isLoadingFiles}
@@ -570,36 +580,105 @@ export function ChatInput({
           t={t}
           position={fileMention.dropdownPosition}
         />
+        {selectedAgents.length > 0 && (
+          <div className="absolute top-0 z-10 flex flex-wrap gap-2">
+            {selectedAgents.map((agent) => (
+              <div
+                key={agent.id}
+                className="inline-flex h-9 items-center gap-1 rounded-t-xl rounded-b-none border border-b-0 px-3 text-xs font-medium shadow-[0_-1px_0_rgba(53,88,255,0.08)]"
+                style={{ borderColor: "#3040cf", color: "#3040cf", backgroundColor: "#eef1ff" }}
+              >
+                <span className="italic">Using</span>
+                <span
+                  className="rounded-md border px-2 py-0.5 not-italic"
+                  style={{ borderColor: "#3040cf", color: "#3040cf", backgroundColor: "#eef1ff" }}
+                >{`@${agent.name}`}</span>
+                {onRemoveSelectedAgent && (
+                  <button
+                    type="button"
+                    onClick={() => onRemoveSelectedAgent(agent.id)}
+                    className="rounded-sm p-0.5 hover:bg-[#dfe6ff]"
+                    title={t("common.remove")}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         <form
           onSubmit={handleSubmit}
           className={cn(
-            "relative rounded-2xl bg-card overflow-hidden transition-all duration-300 border flex flex-col",
+            "relative flex flex-col overflow-hidden border-2 bg-card shadow-sm",
+            selectedAgents.length > 0
+              ? "rounded-tr-2xl rounded-br-2xl rounded-bl-2xl rounded-tl-none"
+              : "rounded-2xl",
             isFocused
-              ? "border-primary/50 shadow-md"
-              : "border-border shadow-sm hover:border-border/80"
+              ? "shadow-[0_0_0_3px_rgba(48,64,207,0.16)]"
+              : ""
           )}
+          style={{
+            borderColor: selectedAgents.length > 0 ? "#3040cf" : isFocused ? "#3040cf" : "#d7deec"
+          }}
         >
-          <div
-            ref={editorRef}
-            contentEditable
-            className={cn(
-              "w-full rounded-md border-0 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground/60 overflow-y-auto resize-none focus-visible:ring-0 focus-visible:ring-offset-0 whitespace-pre-wrap break-words text-left",
-              compact ? "min-h-[44px] px-3 py-3 pr-12 max-h-[150px]" : "min-h-[130px] px-3 py-2 pb-14 max-h-[300px]",
-              isLoading ? "opacity-50 pointer-events-none" : ""
-            )}
-            onInput={handleInput}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste as any}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
-            role="textbox"
-            aria-multiline="true"
-          />
-          {!message && (
-            <div className="absolute top-2 left-3 text-muted-foreground/60 pointer-events-none text-[14px]">
-              {t("chatPage.input.placeholder")}
+          {files.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-4 pt-3">
+              {files.map((file, index) => {
+                const isUploading = uploadingFiles.has(`${file.name}-${file.lastModified}`);
+                return (
+                  <div
+                    key={index}
+                    className={cn(
+                      "inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-slate-100 px-3 text-sm text-slate-700 animate-fade-in-scale transition-colors",
+                      isUploading && "opacity-70"
+                    )}
+                  >
+                    <div className="flex h-4 w-4 items-center justify-center text-slate-600">
+                      {isUploading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <FileIcon className="h-3.5 w-3.5" />
+                      )}
+                    </div>
+                    <span className="max-w-[180px] truncate font-medium">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(index)}
+                      className="ml-0.5 rounded-sm p-0.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700"
+                      title={isUploading ? t("common.cancel") : t("common.remove")}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
+
+          <div className="relative flex-1">
+            <div
+              ref={editorRef}
+              contentEditable
+              className={cn(
+                "w-full rounded-md border-0 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground/60 overflow-y-auto resize-none focus-visible:ring-0 focus-visible:ring-offset-0 whitespace-pre-wrap break-words text-left",
+                compact ? "min-h-[44px] px-3 py-3 pr-12 max-h-[150px]" : cn(minHeightClass, "px-4 py-3 pb-16 max-h-[400px]"),
+                isLoading ? "opacity-50 pointer-events-none" : ""
+              )}
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste as any}
+              onFocus={() => setIsFocused(true)}
+              onBlur={() => setIsFocused(false)}
+              role="textbox"
+              aria-multiline="true"
+            />
+            {!message && (
+              <div className="pointer-events-none absolute left-4 top-3 text-[14px] text-muted-foreground/60">
+                {t("chatPage.input.placeholder")}
+              </div>
+            )}
+          </div>
 
           {/* Bottom toolbar or inline button */}
           {compact ? (
@@ -672,7 +751,7 @@ export function ChatInput({
                       multiple
                       onChange={handleFileSelect}
                       className="hidden"
-                      accept=".pdf,.doc,.docx,.txt,.md,.csv,.json,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp"
+                      accept=".pdf,.doc,.docx,.txt,.md,.csv,.json,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.gif,.webp"
                     />
                     <Button
                       type="button"
@@ -709,21 +788,26 @@ export function ChatInput({
                     <Play className="h-4 w-4" />
                   </Button>
                 ) : (
-                  <Button
-                    type="submit"
-                    size="icon"
-                    disabled={!canSubmit()}
-                    className={cn(
-                      "h-8 w-8 rounded-lg transition-all duration-300",
-                      !canSubmit() && "bg-muted text-muted-foreground/50"
-                    )}
-                  >
-                    {isLoading ? (
-                      <Sparkles className="h-4 w-4 animate-pulse" />
-                    ) : (
-                      <ArrowUp className="h-4 w-4" />
-                    )}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-medium text-muted-foreground/50 select-none mr-1">
+                      ⏎ {t("common.send")}
+                    </span>
+                    <Button
+                      type="submit"
+                      size="icon"
+                      disabled={!canSubmit()}
+                      className={cn(
+                        "h-8 w-8 rounded-lg transition-all duration-300",
+                        !canSubmit() && "bg-muted text-muted-foreground/50"
+                      )}
+                    >
+                      {isLoading ? (
+                        <Sparkles className="h-4 w-4 animate-pulse" />
+                      ) : (
+                        <ArrowUp className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>

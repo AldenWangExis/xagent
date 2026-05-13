@@ -8,7 +8,7 @@ and configuration management.
 # mypy: ignore-errors
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,9 @@ from .....core.workspace import TaskWorkspace
 from .base import AbstractBaseTool, Tool
 from .config import BaseToolConfig
 from .output_filter_wrapper import OutputFilteredToolWrapper
+
+if TYPE_CHECKING:
+    from .....sandbox.base import Sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,7 @@ class ToolRegistry:
                 basic_tools,
                 browser_tools,
                 custom_api_factory,
+                file_ingestion_tool,
                 image_tool,
                 knowledge_tools,
                 mcp_tools,
@@ -324,13 +328,18 @@ class ToolFactory:
                     base_dir=workspace_config.get("base_dir") or str(get_uploads_dir()),
                 )
 
-            # Real task - create actual workspace
+            # Real task - create actual workspace.
+            # IMPORTANT: forward `allowed_external_dirs` so that file tools can
+            # access files outside the per-task workspace directory (e.g. the
+            # user's upload directory). Otherwise read_file/read_csv_file will
+            # reject every uploaded file as "outside the allowed directory".
             from ....workspace import WorkspaceManager
 
             workspace_manager = WorkspaceManager()
             workspace = workspace_manager.get_or_create_workspace(
                 workspace_config.get("base_dir") or str(get_uploads_dir()),
                 task_id or "default",
+                allowed_external_dirs=workspace_config.get("allowed_external_dirs"),
             )
             return workspace
         except Exception as e:
@@ -340,6 +349,7 @@ class ToolFactory:
     @staticmethod
     async def _create_mcp_tools_from_configs(
         mcp_configs: List[Dict[str, Any]],
+        sandbox: Optional["Sandbox"] = None,
     ) -> List[Tool]:
         """Create MCP tools from configurations."""
         try:
@@ -376,11 +386,11 @@ class ToolFactory:
                 connections[config["name"]] = connection_config
 
             # Load MCP tools
-            mcp_tools = await load_mcp_tools_as_agent_tools(connections)  # type: ignore[arg-type]
-            if not mcp_tools:
-                mcp_tools = []
-
-            return mcp_tools  # type: ignore[return-value]
+            mcp_tools = await load_mcp_tools_as_agent_tools(
+                connections,
+                sandbox=sandbox,
+            )  # type: ignore[arg-type]
+            return mcp_tools if mcp_tools else []  # type: ignore[return-value]
         except Exception as e:
             logger.warning(f"Failed to create MCP tools: {e}")
             return []

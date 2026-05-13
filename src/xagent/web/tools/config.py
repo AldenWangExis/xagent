@@ -136,6 +136,7 @@ class WebToolConfig(BaseToolConfig):
         allowed_collections: Optional[List[str]] = None,
         allowed_skills: Optional[List[str]] = None,
         allowed_tools: Optional[List[str]] = None,
+        sandbox: Optional[Any] = None,
     ):
         self.db = db
         self.request = request
@@ -163,6 +164,7 @@ class WebToolConfig(BaseToolConfig):
         self._allowed_collections = allowed_collections
         self._allowed_skills = allowed_skills
         self._allowed_tools = allowed_tools
+        self._delegate_agent_ids: Optional[List[int]] = None
         self._excluded_agent_id: Optional[int] = None
 
         # Cache user object for hook queries.
@@ -171,7 +173,7 @@ class WebToolConfig(BaseToolConfig):
         self._cached_tool_overrides: Optional[dict] = None
 
         # Sandbox instance - only store reference, lifecycle managed by upper layer
-        self._sandbox: Optional[Any] = None
+        self._sandbox: Optional[Any] = sandbox
 
         # Cache for loaded configurations
         self._cached_vision_config: Optional[Any] = None
@@ -326,6 +328,10 @@ class WebToolConfig(BaseToolConfig):
     def get_excluded_agent_id(self) -> Optional[int]:
         """Get agent ID to exclude from agent tools (to prevent self-calls)."""
         return getattr(self, "_excluded_agent_id", None)
+
+    def get_delegate_agent_ids(self) -> Optional[List[int]]:
+        """Get explicitly selected delegable agent IDs."""
+        return getattr(self, "_delegate_agent_ids", None)
 
     def get_user_id(self) -> Optional[int]:
         """Get current user ID for multi-tenancy."""
@@ -725,6 +731,7 @@ class WebToolConfig(BaseToolConfig):
                             "url": api.url,
                             "method": api.method or "GET",
                             "headers": api.headers or {},
+                            "body": api.body,
                             "env": api.env or {},
                         }
                     )

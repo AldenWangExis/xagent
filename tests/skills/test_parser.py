@@ -103,3 +103,112 @@ Follow the steps.
 
         assert "examples/example1.md" in skill["files"]
         assert len(skill["files"]) == 2  # SKILL.md and examples/example1.md
+
+    def test_parse_frontmatter_metadata_when_sections_are_missing(self, tmp_path):
+        """Frontmatter metadata should feed skill selection summaries."""
+        skill_dir = tmp_path / "frontmatter_skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: frontmatter-name
+description: "Create standalone poster images."
+when_to_use: "Use when the requested output is a poster or image."
+tags:
+  - image
+  - design
+---
+
+# Frontmatter Skill
+
+Body-only skill instructions.
+"""
+        )
+
+        skill = SkillParser.parse(skill_dir)
+
+        assert skill["name"] == "frontmatter_skill"
+        assert skill["description"] == "Create standalone poster images."
+        assert (
+            skill["when_to_use"]
+            == "Use when the requested output is a poster or image."
+        )
+        assert skill["tags"] == ["image", "design"]
+
+    def test_parse_frontmatter_empty_scalar_fields(self, tmp_path):
+        """Empty frontmatter scalar fields should not become list strings."""
+        skill_dir = tmp_path / "empty_frontmatter_skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text(
+            """---
+description:
+when_to_use:
+tags:
+  - rag
+---
+
+# Empty Frontmatter Skill
+"""
+        )
+
+        skill = SkillParser.parse(skill_dir)
+
+        assert skill["description"] == ""
+        assert skill["when_to_use"] == ""
+        assert skill["tags"] == ["rag"]
+
+    def test_parse_frontmatter_ignores_yaml_comments(self, tmp_path):
+        """Frontmatter comments should not leak into skill metadata."""
+        skill_dir = tmp_path / "commented_frontmatter_skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text(
+            """---
+# Skill metadata
+description: "Create # tagged assets." # inline note
+when_to_use: Use for visual output. # routing note
+tags:
+  - image # visual
+---
+
+# Commented Frontmatter Skill
+"""
+        )
+
+        skill = SkillParser.parse(skill_dir)
+
+        assert skill["description"] == "Create # tagged assets."
+        assert skill["when_to_use"] == "Use for visual output."
+        assert skill["tags"] == ["image"]
+
+    def test_parse_frontmatter_uses_yaml_parser(self, tmp_path):
+        """Valid YAML frontmatter forms should populate routing metadata."""
+        skill_dir = tmp_path / "yaml_frontmatter_skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text(
+            """---
+description: |
+  Create assets with multiline instructions.
+  Use C# examples when requested.
+when_to_use: >
+  Use when the task asks for visual
+  output variants.
+tags: [image, design]
+---
+
+# YAML Frontmatter Skill
+"""
+        )
+
+        skill = SkillParser.parse(skill_dir)
+
+        assert (
+            skill["description"]
+            == "Create assets with multiline instructions.\nUse C# examples when requested.\n"
+        )
+        assert skill["when_to_use"] == (
+            "Use when the task asks for visual output variants.\n"
+        )
+        assert skill["tags"] == ["image", "design"]

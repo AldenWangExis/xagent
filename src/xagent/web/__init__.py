@@ -23,8 +23,6 @@ try:
 except Exception:
     __version__ = "0.0.0+unknown"
 
-from .app import app
-
 
 def run_server(
     host: str = "127.0.0.1", port: int = 8000, reload: bool = False, **kwargs: Any
@@ -42,4 +40,4 @@ def run_server(
     uvicorn.run("xagent.web.app:app", host=host, port=port, reload=reload, **kwargs)
 
 
-__all__ = ["app", "run_server", "__version__"]
+__all__ = ["run_server", "__version__"]

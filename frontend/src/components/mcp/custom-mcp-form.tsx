@@ -4,7 +4,8 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select-radix"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react"
 import { useI18n } from "@/contexts/i18n-context"
 import { MCPServerFormData } from "./custom-api-form"
 
@@ -92,31 +93,19 @@ export function CustomMcpForm({
           placeholder={t('tools.mcp.form.descriptionPlaceholder')}
         />
       </div>
-
       <div className="space-y-2">
         <Label>{t('tools.mcp.dialog.transport')}</Label>
-        <div className="flex bg-slate-100 p-1 rounded-md">
-          <button
-            type="button"
-            className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${transport === "sse" ? "bg-blue-600 text-white shadow" : "text-slate-600 hover:text-slate-900 hover:bg-slate-200"}`}
-            onClick={() => setMcpFormData((prev: MCPServerFormData) => ({ ...prev, transport: "sse" }))}
-          >
-            SSE / HTTP
-          </button>
-          <button
-            type="button"
-            className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${transport === "stdio" ? "bg-blue-600 text-white shadow" : "text-slate-600 hover:text-slate-900 hover:bg-slate-200"}`}
-            onClick={() => setMcpFormData((prev: MCPServerFormData) => ({ ...prev, transport: "stdio" }))}
-          >
-            STDIO
-          </button>
-          <button
-            type="button"
-            className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${transport === "websocket" ? "bg-blue-600 text-white shadow" : "text-slate-600 hover:text-slate-900 hover:bg-slate-200"}`}
-            onClick={() => setMcpFormData((prev: MCPServerFormData) => ({ ...prev, transport: "websocket" }))}
-          >
-            WebSocket
-          </button>
+        <div className="flex bg-slate-100 p-1 rounded-md flex-wrap gap-1">
+          {(["streamable_http", "sse", "stdio", "websocket"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${transport === t ? "bg-blue-600 text-white shadow" : "text-slate-600 hover:text-slate-900 hover:bg-slate-200"}`}
+              onClick={() => setMcpFormData((prev: MCPServerFormData) => ({ ...prev, transport: t }))}
+            >
+              {t === "sse" ? "SSE" : t === "streamable_http" ? "HTTP" : t === "stdio" ? "STDIO" : "WebSocket"}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -130,6 +119,12 @@ export function CustomMcpForm({
               onChange={(e) => updateConfig("command", e.target.value)}
               placeholder={t('tools.mcp.dialog.commandPlaceholder')}
             />
+            <Alert className="border-amber-200 bg-amber-50 text-amber-900">
+              <Info className="h-4 w-4 text-amber-700" />
+              <AlertDescription className="text-amber-800">
+                {t('tools.mcp.form.stdioSandboxHint')}
+              </AlertDescription>
+            </Alert>
           </div>
           <div className="space-y-2">
             <Label htmlFor="args">{t('tools.mcp.dialog.arguments')}</Label>
@@ -153,7 +148,7 @@ export function CustomMcpForm({
               id="url"
               value={mcpFormData.config?.url || ""}
               onChange={(e) => updateConfig("url", e.target.value)}
-              placeholder={transport === "websocket" ? "wss://mcp.example.com/ws" : "https://mcp.example.com"}
+              placeholder={transport === "websocket" ? "wss://mcp.example.com/ws" : transport === "streamable_http" ? "https://mcp.example.com/mcp" : "https://mcp.example.com/sse"}
             />
           </div>
 

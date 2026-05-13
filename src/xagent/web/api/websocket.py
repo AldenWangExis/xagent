@@ -30,6 +30,7 @@ from ..models.task import Task
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..tools.config import WebToolConfig
+from ..tracing import create_ephemeral_tracer
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import safe_timestamp_to_unix
 
@@ -1369,16 +1370,52 @@ async def handle_chat_message(
                     if file_info_list:
                         context["uploaded_files"] = uploaded_file_paths
                         context["file_info"] = file_info_list
-                        file_summary = "\n".join(
-                            [
-                                f"- {f['name']} (ID: {f['file_id']}, {f['size']} bytes, {f['type']}, Path: {f['path']})"
-                                for f in file_info_list
-                            ]
-                        )
+                        file_ids = [f["file_id"] for f in file_info_list]
+                        file_names = [f["name"] for f in file_info_list]
+                        file_id_list_str = ", ".join(f'"{fid}"' for fid in file_ids)
+
+                        # Check if this task is an agent-builder task to inject KB instructions
+                        is_agent_builder = False
+                        if task.agent_id:
+                            from ..models.agent import Agent
+
+                            agent_record = (
+                                db.query(Agent)
+                                .filter(Agent.id == task.agent_id)
+                                .first()
+                            )
+                            if agent_record and agent_record.skills:
+                                if isinstance(agent_record.skills, list):
+                                    is_agent_builder = any(
+                                        s == "agent-builder"
+                                        for s in agent_record.skills
+                                    )
+                                elif isinstance(agent_record.skills, str):
+                                    is_agent_builder = (
+                                        "agent-builder" in agent_record.skills
+                                    )
+
                         file_prompt = (
-                            "Uploaded files are available at the following absolute paths:\n"
-                            f"{file_summary}"
+                            "## UPLOADED FILES\n"
+                            f"The user has uploaded {len(file_info_list)} file(s): {file_names}\n\n"
                         )
+
+                        if is_agent_builder:
+                            file_prompt += (
+                                f"Use these exact file_ids (UUIDs) with `create_knowledge_base_from_file`:\n"
+                                f"  file_ids = [{file_id_list_str}]\n\n"
+                                "IMPORTANT: The file_ids above are UUIDs (e.g. '5d983e39-a83b-...'). "
+                                "Do NOT use file paths as file_ids. "
+                                "Call `create_knowledge_base_from_file` with the file_ids listed above, "
+                                "then create or update the agent with the returned collection_name. "
+                                "Do NOT generate a 'wait for upload' step — the files are already uploaded."
+                            )
+                        else:
+                            file_prompt += (
+                                "These files have been successfully uploaded to the workspace and are ready for processing.\n"
+                                "You can use standard workspace tools to read, analyze, or process them."
+                            )
+
                         existing_prompt = context.get("system_prompt")
                         if existing_prompt:
                             context["system_prompt"] = (
@@ -1484,23 +1521,10 @@ async def handle_chat_message(
 
                     # Continuation will be handled by old task, return directly
                     return
-                elif task_is_running and not has_continuation:
-                    # Task is running but doesn't support continuation (shouldn't happen)
-                    logger.error(
-                        f"Task {task_id} is running but does not support continuation"
-                    )
-                    await manager.send_personal_message(
-                        {
-                            "type": "error",
-                            "message": "Task does not support message continuation",
-                        },
-                        websocket,
-                    )
-                    return
-                else:
-                    # New task (PENDING/COMPLETED/FAILED), execute normally
+                if not (task_is_running and has_continuation):
+                    # New task (PENDING/COMPLETED/FAILED) OR running non-DAG agent (new turn)
                     logger.info(
-                        f"Task {task_id} is not running (status: {task.status.value}), starting new execution"
+                        f"Task {task_id} starting new execution turn (status: {task.status.value})"
                     )
 
                     if persisted_user_message is not None:
@@ -2530,11 +2554,13 @@ async def handle_builder_chat(
         websocket.state.builder_task_id = f"builder_chat_{uuid.uuid4().hex[:8]}"
     builder_task_id = websocket.state.builder_task_id
 
-    from ...core.agent.trace import Tracer
-
-    builder_tracer = Tracer()
-    builder_tracer.add_handler(
-        SharedWebSocketTracer(websocket, builder_task_id, is_preview=False)
+    builder_tracer = create_ephemeral_tracer(
+        task_id=builder_task_id,
+        websocket_handler=SharedWebSocketTracer(
+            websocket, builder_task_id, is_preview=False
+        ),
+        user=user,
+        is_preview=False,
     )
 
     try:
@@ -2549,13 +2575,33 @@ async def handle_builder_chat(
             if isinstance(last_msg, dict) and last_msg.get("role") == "user":
                 user_message = last_msg.get("content", "")
 
-        # Inject explicit reminder for context preservation if it's a System Note about KB
-        # TODO/Workaround: Currently relying on string matching for "[System Note:" which is fragile.
-        # Consider using a structured message format (e.g., specific role or payload field) for system notes in the future.
-        if "[System Note:" in user_message and (
-            "knowledge base" in user_message or "ingest it" in user_message
-        ):
-            user_message += "\n\nCRITICAL REMINDER: Continue building the agent based on the user's ORIGINAL requirements (name, role, specific instructions) from earlier in the conversation. Do NOT generate a generic name like 'FAQ Bot' and do NOT forget the original context."
+        # Handle uploaded files: upload to server and inject file_ids into message
+        files = message_data.get("files", [])
+        if files:
+            from ..models.uploaded_file import UploadedFile as _UploadedFile
+
+            file_ids = []
+            for file_info in files:
+                file_id = file_info.get("file_id")
+                if not file_id:
+                    continue
+                record = (
+                    db.query(_UploadedFile)
+                    .filter(
+                        _UploadedFile.file_id == file_id,
+                        _UploadedFile.user_id == int(user.id),
+                    )
+                    .first()
+                )
+                if record:
+                    file_ids.append(file_id)
+
+            if file_ids:
+                user_message += (
+                    f"\n\n[Uploaded file_ids: {file_ids}. "
+                    "Please call `create_knowledge_base_from_file` with these file_ids immediately, "
+                    "then create or update the agent with the resulting collection_name.]"
+                )
 
         # Build current_config back from top-level keys
         current_config = {
@@ -2594,6 +2640,11 @@ Important instructions:
      CRITICAL INSTRUCTION: You MUST set your DECISION JSON type to "tool_call" to invoke `ask_user_question`. Your text reasoning should explain why you are asking the user. The system will then prompt you to generate the native tool call parameters. Do NOT include the "message" or "interactions" in your DECISION JSON block.
    - Do NOT proceed to create or update the agent until the knowledge base is ready.
 
+File upload handling:
+- When the user uploads files, their file_ids will be provided in the message context under "uploaded_file_ids".
+- If file_ids are present, you MUST IMMEDIATELY call `create_knowledge_base_from_file` with those file_ids to create the knowledge base.
+- Do NOT ask the user to upload again if file_ids are already provided.
+
 You have access to the following tools:
 - create_agent: Create a new agent with specific capabilities
 - update_agent: Update an existing agent with specific capabilities
@@ -2602,8 +2653,10 @@ You have access to the following tools:
 - list_knowledge_bases: Query the list of knowledge bases you can associate with an agent
 - ask_user_question: Ask the user a question with a clarification form when you need their input or decision (e.g., about creating a knowledge base)
 - create_knowledge_base_from_url: Create a knowledge base by crawling a given website URL (use this automatically if the user provided a URL)
+- create_knowledge_base_from_file: Create a knowledge base from already-uploaded files using their file_ids (use this when the user has uploaded files)
 
-Use the create_agent tool whenever the user wants to build a new agent and there is no agent ID in the current configuration. If a System Note says a knowledge base was created, use create_agent to build the agent and attach the knowledge base. CRITICAL: When continuing after a System Note about knowledge base creation, you MUST retrieve and use the user's ORIGINAL requirements (name, role, instructions, etc.) from earlier in the conversation. Do NOT generate generic names like "FAQ Bot" or "Data Q&A Agent", and do NOT forget the original context!
+Use the create_agent tool whenever the user wants to build a new agent and there is no agent ID in the current configuration.
+CRITICAL: Always use the user's ORIGINAL requirements (name, role, instructions, etc.) from earlier in the conversation. Do NOT generate generic names like "FAQ Bot" or "Data Q&A Agent"!
 Use the update_agent tool whenever the user wants to modify their current agent configuration and an agent ID is available in the current configuration.
 If the user wants to add skills, tool categories, or knowledge bases but you are unsure which ones exist, use the list_* tools to find out before calling create_agent or update_agent.
 """
@@ -2655,6 +2708,9 @@ If the user wants to add skills, tool categories, or knowledge bases but you are
             from ...core.tools.adapters.vibe.document_search import (
                 ListKnowledgeBasesTool,
             )
+            from ...core.tools.adapters.vibe.file_ingestion_tool import (
+                CreateKnowledgeBaseFromFileTool,
+            )
             from ...core.tools.adapters.vibe.web_ingestion_tool import (
                 CreateKnowledgeBaseFromUrlTool,
             )
@@ -2681,6 +2737,9 @@ If the user wants to add skills, tool categories, or knowledge bases but you are
             create_kb_url_tool = CreateKnowledgeBaseFromUrlTool(
                 user_id=int(user.id), is_admin=bool(user.is_admin)
             )
+            create_kb_file_tool = CreateKnowledgeBaseFromFileTool(
+                user_id=int(user.id), is_admin=bool(user.is_admin)
+            )
 
             # Build allowed external directories
             allowed_external_dirs = []
@@ -2705,6 +2764,7 @@ If the user wants to add skills, tool categories, or knowledge bases but you are
                     list_kbs_tool,
                     ask_user_question_tool,
                     create_kb_url_tool,
+                    create_kb_file_tool,
                 ],
                 use_dag_pattern=False,  # Use ReAct pattern
                 id=builder_task_id,
@@ -2985,7 +3045,6 @@ async def handle_build_preview_execution(
     from sqlalchemy.orm import Session
 
     from ...core.agent.service import AgentService
-    from ...core.agent.trace import Tracer
     from ...core.memory.in_memory import InMemoryMemoryStore
     from ..models.database import get_db
     from ..models.model import Model as DBModel
@@ -3014,10 +3073,13 @@ async def handle_build_preview_execution(
     # Generate temporary task_id
     preview_task_id = f"build_preview_{uuid.uuid4().hex[:8]}"
 
-    # Create Tracer instance with WebSocket handler
-    preview_tracer = Tracer()
-    preview_tracer.add_handler(
-        SharedWebSocketTracer(websocket, preview_task_id, is_preview=True)
+    preview_tracer = create_ephemeral_tracer(
+        task_id=preview_task_id,
+        websocket_handler=SharedWebSocketTracer(
+            websocket, preview_task_id, is_preview=True
+        ),
+        user=user,
+        is_preview=True,
     )
 
     # Get database session
@@ -3095,6 +3157,20 @@ async def handle_build_preview_execution(
                 self.user: Any = type("obj", (), {"id": user_id})()
                 self.credentials: Any = None
 
+        # Get or create user sandbox for run preview task tools
+        from ..sandbox_manager import get_sandbox_manager
+
+        sandbox_manager = get_sandbox_manager()
+        sandbox = None
+        if sandbox_manager:
+            user_id = int(user.id)
+            try:
+                sandbox = await sandbox_manager.get_or_create_sandbox(
+                    "user", str(user_id)
+                )
+            except Exception as e:
+                logger.error(f"Failed to create sandbox for user {user_id}: {e}")
+
         # Filter tools by category - use tool metadata
         # Note: tool names are stable, defined in code, no database storage needed
         allowed_tools = []
@@ -3115,6 +3191,7 @@ async def handle_build_preview_execution(
                 include_mcp_tools=has_mcp,
                 task_id=None,
                 browser_tools_enabled=True,
+                sandbox=sandbox,
             )
 
             # Collect tools by category (async)
@@ -3205,24 +3282,8 @@ async def handle_build_preview_execution(
             include_mcp_tools=bool(
                 tool_categories and any(tc.startswith("mcp:") for tc in tool_categories)
             ),
+            sandbox=sandbox,
         )
-
-        # Create sandbox for preview task
-        from ..sandbox_manager import get_sandbox_manager
-
-        sandbox_manager = get_sandbox_manager()
-        sandbox = None
-        if sandbox_manager:
-            user_id = int(user.id)
-            try:
-                sandbox = await sandbox_manager.get_or_create_sandbox(
-                    "user", str(user_id)
-                )
-            except Exception as e:
-                logger.error(f"Failed to create sandbox for user {user_id}: {e}")
-
-            if sandbox:
-                tool_config.set_sandbox(sandbox)
 
         # Check if previewing a published agent, exclude it from agent tools
         preview_agent_id = message_data.get("agent_id")

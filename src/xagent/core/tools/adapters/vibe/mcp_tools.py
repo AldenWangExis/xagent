@@ -21,7 +21,10 @@ async def create_mcp_tools(config: "BaseToolConfig") -> List[Any]:
     try:
         from .factory import ToolFactory
 
-        return await ToolFactory._create_mcp_tools_from_configs(mcp_configs)
+        return await ToolFactory._create_mcp_tools_from_configs(
+            mcp_configs,
+            sandbox=config.get_sandbox(),
+        )
     except Exception as e:
         logger.warning(f"Failed to create MCP tools: {e}")
         return []

@@ -30,10 +30,9 @@ from ..services.task_execution_context_service import (
     load_task_execution_recovery_state,
 )
 from ..tools.config import WebToolConfig
+from ..tracing import create_task_tracer
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import format_datetime_for_api, safe_timestamp_to_unix
-from .trace_handlers import DatabaseTraceHandler
-from .ws_trace_handlers import WebSocketTraceHandler
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +127,31 @@ def create_default_llm() -> Optional[BaseLLM]:
         return None
 
 
+def _build_allowed_external_dirs(
+    user_id: Optional[int], *, only_existing: bool = False
+) -> list[str]:
+    """Build the allowed_external_dirs list for AgentService / tool
+    workspace_config.
+
+    Without this whitelist, file tools (read_file, read_csv_file,
+    list_files, ...) restrict themselves to the per-task workspace dir
+    and reject every uploaded file with "outside the allowed directory".
+
+    The list always contains:
+      - the user's upload directory ``<uploads>/user_<id>``
+        (when ``only_existing`` is True, only if that directory exists)
+      - any directories returned by ``get_external_upload_dirs()`` (used
+        for shared knowledge bases configured at the deployment level)
+    """
+    dirs: list[str] = []
+    if user_id is not None:
+        user_upload_dir = get_uploads_dir() / f"user_{user_id}"
+        if not only_existing or user_upload_dir.exists():
+            dirs.append(str(user_upload_dir))
+    dirs.extend([str(d) for d in get_external_upload_dirs()])
+    return dirs
+
+
 async def create_default_tools(
     db: Session,
     request: Any = None,
@@ -137,6 +161,7 @@ async def create_default_tools(
     allowed_skills: Optional[List[str]] = None,
     allowed_tools: Optional[List[str]] = None,
     excluded_agent_id: Optional[int] = None,
+    delegate_agent_ids: Optional[List[int]] = None,
     vision_model: Optional[Any] = None,
     sandbox: Optional[Any] = None,
     llm: Optional[Any] = None,
@@ -150,6 +175,10 @@ async def create_default_tools(
     # Create a WebToolConfig to properly initialize tools
     from ..tools.config import WebToolConfig
 
+    # Build allowed external directories so file tools can reach the user's
+    # uploads (see _build_allowed_external_dirs docstring).
+    allowed_external_dirs = _build_allowed_external_dirs(int(user.id))
+
     tool_config = WebToolConfig(
         db=db,
         request=request,
@@ -160,6 +189,7 @@ async def create_default_tools(
         workspace_config={
             "base_dir": str(get_uploads_dir() / f"user_{user.id}"),
             "task_id": task_id,
+            "allowed_external_dirs": allowed_external_dirs,
         },
         include_mcp_tools=bool(
             allowed_tools and any(t.startswith("mcp_") for t in allowed_tools)
@@ -175,6 +205,8 @@ async def create_default_tools(
     # Store excluded_agent_id in tool_config for agent tool filtering
     if excluded_agent_id:
         tool_config._excluded_agent_id = excluded_agent_id
+    if delegate_agent_ids is not None:
+        tool_config._delegate_agent_ids = delegate_agent_ids
 
     # Use sandbox if available
     if sandbox:
@@ -498,15 +530,7 @@ class AgentServiceManager:
                         # Continue with normal agent creation
 
             # Create tracer with all necessary handlers
-            tracer = Tracer()
-            # Add console handler for logging
-            from ...core.agent.trace import ConsoleTraceHandler
-
-            tracer.add_handler(ConsoleTraceHandler())
-            # Add database handler for persistence
-            tracer.add_handler(DatabaseTraceHandler(task_id))
-            # Add WebSocket handler for real-time updates
-            tracer.add_handler(WebSocketTraceHandler(task_id))
+            tracer = create_task_tracer(task_id, user)
 
             # Get LLM configuration from task database record
             logger.info(f"Loading LLM configuration for task {task_id} from database")
@@ -650,6 +674,26 @@ class AgentServiceManager:
                             f"Task {task_id} is associated with published agent {current_agent.id} ({current_agent.name}), will exclude from agent tools"
                         )
 
+                # Get or create user sandbox for run task tools
+                user_id = int(user.id)
+                sandbox = self._sandboxes.get(user_id)
+                if sandbox is None:
+                    from ..sandbox_manager import get_sandbox_manager
+
+                    sandbox_mgr = get_sandbox_manager()
+                    if sandbox_mgr:
+                        try:
+                            sandbox = await sandbox_mgr.get_or_create_sandbox(
+                                "user", str(user_id)
+                            )
+                            self._sandboxes[user_id] = sandbox
+                        except Exception as e:
+                            # Graceful degradation: tools will run locally without sandbox
+                            logger.warning(
+                                f"Sandbox creation failed for user {user_id}, "
+                                f"falling back to local execution: {e}"
+                            )
+
                 # Filter tools by tool category using tool metadata
                 # Note: Tool names are stable, defined in code, no database storage needed
                 allowed_tools = None
@@ -673,6 +717,7 @@ class AgentServiceManager:
                         browser_tools_enabled=True,
                         allowed_collections=agent_config.get("knowledge_bases"),
                         allowed_skills=agent_config.get("skills"),
+                        sandbox=sandbox,
                     )
 
                     # Get all tools and filter by category
@@ -730,25 +775,15 @@ class AgentServiceManager:
                         f"Tool categories {tool_categories} mapped to {len(allowed_tools)} tools for task {task_id}"
                     )
 
-                # Get or create sandbox for this user
-                user_id = int(user.id)
-                sandbox = self._sandboxes.get(user_id)
-                if sandbox is None:
-                    from ..sandbox_manager import get_sandbox_manager
-
-                    sandbox_mgr = get_sandbox_manager()
-                    if sandbox_mgr:
-                        try:
-                            sandbox = await sandbox_mgr.get_or_create_sandbox(
-                                "user", str(user_id)
-                            )
-                            self._sandboxes[user_id] = sandbox
-                        except Exception as e:
-                            # Graceful degradation: tools will run locally without sandbox
-                            logger.warning(
-                                f"Sandbox creation failed for user {user_id}, "
-                                f"falling back to local execution: {e}"
-                            )
+                delegate_agent_ids: Optional[List[int]] = None
+                if task and isinstance(task.delegate_agent_ids, list):
+                    delegate_agent_ids = [
+                        int(agent_id)
+                        for agent_id in task.delegate_agent_ids
+                        if isinstance(agent_id, int)
+                    ]
+                    if not delegate_agent_ids:
+                        delegate_agent_ids = None
 
                 # Create tools using ToolFactory
                 tools = await create_default_tools(
@@ -762,6 +797,7 @@ class AgentServiceManager:
                     allowed_skills=agent_config["skills"] if agent_config else None,
                     allowed_tools=allowed_tools,
                     excluded_agent_id=excluded_agent_id,
+                    delegate_agent_ids=delegate_agent_ids,
                     vision_model=task_vision_llm,  # Pass task-specific vision model
                     sandbox=sandbox,
                     llm=task_llm,  # Pass task-specific LLM
@@ -813,6 +849,32 @@ class AgentServiceManager:
                         system_prompt, kb_list
                     )
 
+                    if delegate_agent_ids:
+                        delegate_agents = (
+                            db.query(Agent)
+                            .filter(
+                                Agent.user_id == int(user.id),
+                                Agent.id.in_(delegate_agent_ids),
+                            )
+                            .all()
+                        )
+                        if delegate_agents:
+                            delegate_lines = [
+                                f"- {agent.name}: {agent.description or 'Use this agent when its specialty matches the task.'}"
+                                for agent in delegate_agents
+                            ]
+                            delegate_prompt = (
+                                "\n\n[Delegation Instructions]\n"
+                                "You can delegate subtasks to the following selected agents.\n"
+                                "Use them when their specialization matches the user's request.\n"
+                                + "\n".join(delegate_lines)
+                            )
+                            system_prompt = (
+                                (system_prompt or "") + delegate_prompt
+                                if system_prompt
+                                else delegate_prompt.lstrip("\n")
+                            )
+
                     # Extract memory similarity threshold from agent config
                     memory_similarity_threshold = None
                     if agent_config and "memory_similarity_threshold" in agent_config:
@@ -821,14 +883,8 @@ class AgentServiceManager:
                         ]
 
                     # Build allowed external directories (user's upload directory for knowledge base files)
-                    allowed_external_dirs = []
-                    if user and user.id:
-                        user_upload_dir = get_uploads_dir() / f"user_{user.id}"
-                        allowed_external_dirs.append(str(user_upload_dir))
-
-                    # Add configured external upload directories (for knowledge base files from other projects)
-                    allowed_external_dirs.extend(
-                        [str(d) for d in get_external_upload_dirs()]
+                    allowed_external_dirs = _build_allowed_external_dirs(
+                        int(user.id) if user and user.id else None
                     )
 
                     # Create AgentService first (this creates the workspace)
@@ -1030,23 +1086,11 @@ class AgentServiceManager:
             )
         workspace_ids.append((f"web_task_{task_id}", str(get_uploads_dir())))
 
-        # Build allowed external directories (user's upload directory for knowledge base files)
-        allowed_external_dirs = []
-        if user_id:
-            user_upload_dir = get_uploads_dir() / f"user_{user_id}"
-            if user_upload_dir.exists():
-                allowed_external_dirs.append(str(user_upload_dir))
-                logger.info(
-                    f"Added user upload directory to allowed external dirs: {user_upload_dir}"
-                )
-
-        # Add configured external upload directories (for knowledge base files from other projects)
-        external_upload_dirs = get_external_upload_dirs()
-        allowed_external_dirs.extend([str(d) for d in external_upload_dirs])
-        if external_upload_dirs:
-            logger.info(
-                f"Added {len(external_upload_dirs)} external upload directories from config"
-            )
+        # Build allowed external directories (user's upload directory for knowledge base files).
+        # Use only_existing=True here because cleanup runs against on-disk state.
+        allowed_external_dirs = _build_allowed_external_dirs(
+            user_id, only_existing=True
+        )
 
         for workspace_id, base_dir in workspace_ids:
             workspace = TaskWorkspace(
@@ -1121,12 +1165,8 @@ class AgentServiceManager:
                 database_type = self._infer_database_type(database_url)
 
                 # Build allowed external directories
-                allowed_external_dirs = []
-                if user and user.id:
-                    user_upload_dir = get_uploads_dir() / f"user_{user.id}"
-                    allowed_external_dirs.append(str(user_upload_dir))
-                allowed_external_dirs.extend(
-                    [str(d) for d in get_external_upload_dirs()]
+                allowed_external_dirs = _build_allowed_external_dirs(
+                    int(user.id) if user and user.id else None
                 )
 
                 # Create AgentService with Text2SQL agent type
@@ -1301,12 +1341,10 @@ class AgentServiceManager:
 
             if tracer_events or plan_state:
                 # Create a minimal agent first
-                tracer = Tracer()
-                from ...core.agent.trace import ConsoleTraceHandler
-
-                tracer.add_handler(ConsoleTraceHandler())
-                tracer.add_handler(DatabaseTraceHandler(task_id))
-                tracer.add_handler(WebSocketTraceHandler(task_id))
+                tracer = create_task_tracer(
+                    task_id,
+                    user_id=int(user_id) if user_id is not None else None,
+                )
 
                 # Get LLM configuration from task database record
                 try:
@@ -1338,12 +1376,8 @@ class AgentServiceManager:
                     task_compact_llm = None
 
                 # Build allowed external directories
-                allowed_external_dirs = []
-                if user_id is not None:
-                    user_upload_dir = get_uploads_dir() / f"user_{user_id}"
-                    allowed_external_dirs.append(str(user_upload_dir))
-                allowed_external_dirs.extend(
-                    [str(d) for d in get_external_upload_dirs()]
+                allowed_external_dirs = _build_allowed_external_dirs(
+                    int(user_id) if user_id is not None else None
                 )
 
                 # Create agent with basic configuration
@@ -1453,6 +1487,8 @@ async def create_task(
 ) -> TaskCreateResponse:
     """Create new chat task"""
     try:
+        from ..models.agent import Agent as AgentModel
+
         # Build task description with file information
         task_description = request.description or ""
 
@@ -1500,6 +1536,32 @@ async def create_task(
                 else:
                     task_description = "File processing task:\n" + "\n".join(
                         file_info_list
+                    )
+
+        delegate_agent_ids: Optional[list[int]] = None
+        if request.delegate_agent_ids:
+            requested_delegate_ids = [
+                int(agent_id)
+                for agent_id in request.delegate_agent_ids
+                if isinstance(agent_id, int)
+            ]
+            if requested_delegate_ids:
+                delegate_agents = (
+                    db.query(AgentModel)
+                    .filter(
+                        AgentModel.user_id == int(user.id),
+                        AgentModel.id.in_(requested_delegate_ids),
+                        AgentModel.status.in_(  # type: ignore[attr-defined]
+                            ["published"]
+                        ),
+                    )
+                    .all()
+                )
+                delegate_agent_ids = [int(agent.id) for agent in delegate_agents]
+                if len(delegate_agent_ids) != len(set(requested_delegate_ids)):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Some delegate agents are invalid or do not belong to the current user",
                     )
 
         # Set LLM configuration for this task first to get model info.
@@ -1604,8 +1666,6 @@ async def create_task(
         llm_ids_to_use = request.llm_ids
         if not llm_ids_to_use and request.agent_id:
             # Fetch model configuration from agent
-            from ..models.agent import Agent as AgentModel
-
             agent_db = (
                 db.query(AgentModel)
                 .filter(
@@ -1693,6 +1753,8 @@ async def create_task(
             task_agent_config.update(request.agent_config)
         if selected_file_ids:
             task_agent_config["selected_file_ids"] = selected_file_ids
+        if delegate_agent_ids:
+            task_agent_config["delegate_agent_ids"] = delegate_agent_ids
 
         task_execution_mode = request.execution_mode
         if not task_execution_mode:
@@ -1721,6 +1783,7 @@ async def create_task(
             process_description=request.process_description,
             examples=examples_data,
             agent_id=request.agent_id,  # Set agent_id if provided
+            delegate_agent_ids=delegate_agent_ids,
         )
 
         # Set agent_type using the property to avoid Column type issues
@@ -1761,6 +1824,8 @@ async def create_task(
             channel_name=task.channel_name,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Create task failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

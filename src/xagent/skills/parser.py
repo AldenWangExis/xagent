@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
+import yaml
+
 
 class SkillParser:
     """Parse SKILL.md files"""
@@ -43,17 +45,67 @@ class SkillParser:
         template_md = skill_dir / "template.md"
         template_content = template_md.read_text() if template_md.exists() else ""
 
+        frontmatter = SkillParser._extract_frontmatter(content)
+        section_description = SkillParser._extract_section(content, "Description")
+        section_when_to_use = SkillParser._extract_section(content, "When to Use")
+        section_tags = SkillParser._extract_tags(content)
+        frontmatter_tags = SkillParser._frontmatter_string_list(frontmatter, "tags")
+        tags = frontmatter_tags or section_tags
+
         return {
             "name": skill_dir.name,
             "path": str(skill_dir),
             "content": content,  # Complete SKILL.md content
             "template": template_content,  # template.md content (if exists)
-            "description": SkillParser._extract_section(content, "Description"),
-            "when_to_use": SkillParser._extract_section(content, "When to Use"),
+            "description": section_description
+            or SkillParser._frontmatter_string(frontmatter, "description"),
+            "when_to_use": section_when_to_use
+            or SkillParser._frontmatter_string(frontmatter, "when_to_use"),
             "execution_flow": SkillParser._extract_section(content, "Execution Flow"),
-            "tags": SkillParser._extract_tags(content),
+            "tags": tags,
             "files": SkillParser._list_files(skill_dir),
         }
+
+    @staticmethod
+    def _extract_frontmatter(content: str) -> Dict:
+        """Extract YAML frontmatter from a skill file."""
+        stripped = content.lstrip()
+        if not stripped.startswith("---"):
+            return {}
+
+        lines = stripped.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return {}
+
+        end_index = None
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip().startswith("---"):
+                end_index = index
+                break
+        if end_index is None:
+            return {}
+
+        frontmatter_text = "\n".join(lines[1:end_index])
+        try:
+            metadata = yaml.safe_load(frontmatter_text)
+        except yaml.YAMLError:
+            return {}
+
+        return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    def _frontmatter_string(frontmatter: Dict, key: str) -> str:
+        """Return a scalar frontmatter field or an empty string."""
+        value = frontmatter.get(key)
+        return value if isinstance(value, str) else ""
+
+    @staticmethod
+    def _frontmatter_string_list(frontmatter: Dict, key: str) -> List[str]:
+        """Return a list of string frontmatter values or an empty list."""
+        value = frontmatter.get(key)
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, str)]
 
     @staticmethod
     def _extract_section(content: str, section_name: str) -> str:

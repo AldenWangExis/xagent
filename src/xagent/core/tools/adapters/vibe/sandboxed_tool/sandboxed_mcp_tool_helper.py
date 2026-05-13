@@ -1,0 +1,155 @@
+"""Sandbox helpers for MCP tool registration and wrapping."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+import posixpath
+import uuid
+from collections.abc import Callable
+
+from mcp.types import Tool as MCPTool
+
+from ......sandbox.base import Sandbox
+from ....core.mcp.sessions import Connection
+from ..base import AbstractBaseTool
+from .sandbox_config import SandboxConfig, set_instance_sandbox_config
+from .sandboxed_tool_wrapper import (
+    SANDBOX_BASE_DEPENDENCIES,
+    SANDBOX_SRC_ROOT,
+    SandboxDependencyManager,
+    create_sandboxed_tool,
+)
+
+logger = logging.getLogger(__name__)
+
+_MCP_RUNNER_PATH = (
+    f"{SANDBOX_SRC_ROOT}/xagent/core/tools/adapters/vibe/sandboxed_tool/mcp_runner.py"
+)
+
+_MCP_SANDBOX_COMMANDS = {"npx", "uvx"}
+_MCP_SANDBOX_TIMEOUT_SECONDS = 60
+
+_MCP_SANDBOX_EXTRA_PACKAGES = ["mcp>=1.12.4", "uv>=0.8.0"]
+_MCP_SANDBOX_ENV = ["XAGENT_USER_ID"]
+_MCP_SANDBOX_CONFIG = SandboxConfig(
+    packages=tuple(_MCP_SANDBOX_EXTRA_PACKAGES),
+    env_vars=tuple(_MCP_SANDBOX_ENV),
+)
+
+_SANDBOX_MCP_DEPENDENCIES = SANDBOX_BASE_DEPENDENCIES + _MCP_SANDBOX_EXTRA_PACKAGES
+
+
+def should_sandbox_mcp_connection(connection: Connection) -> bool:
+    """Return whether the MCP connection should run inside sandbox."""
+    if connection.get("transport") != "stdio":
+        return False
+
+    command = connection.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return False
+
+    return posixpath.basename(command) in _MCP_SANDBOX_COMMANDS
+
+
+def _serialize_connection(connection: Connection) -> str:
+    """Serialize a connection dict for sandbox transport."""
+    return base64.b64encode(
+        json.dumps(connection, ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+
+
+async def list_tools_in_sandbox(
+    sandbox: Sandbox,
+    connection: Connection,
+    *,
+    timeout_seconds: int = _MCP_SANDBOX_TIMEOUT_SECONDS,
+) -> list[MCPTool]:
+    """List MCP tools by creating the MCP session inside sandbox."""
+    result_file = f"/tmp/xagent_mcp_tools_{uuid.uuid4().hex}.json"
+    connection_b64 = _serialize_connection(connection)
+
+    await SandboxDependencyManager.ensure_requirements(
+        sandbox, _SANDBOX_MCP_DEPENDENCIES
+    )
+
+    try:
+        try:
+            result = await asyncio.wait_for(
+                sandbox.exec(
+                    "python",
+                    _MCP_RUNNER_PATH,
+                    "--connection-b64",
+                    connection_b64,
+                    "--result-file",
+                    result_file,
+                    env={"PYTHONPATH": SANDBOX_SRC_ROOT},
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"MCP list_tools timed out after {timeout_seconds} seconds"
+            ) from exc
+
+        if result.exit_code != 0:
+            error_msg = result.stderr or result.error_message or "Unknown error"
+            raise RuntimeError(f"Sandbox MCP list_tools failed: {error_msg}")
+
+        try:
+            output = await sandbox.read_file(result_file)
+        except FileNotFoundError:
+            logger.warning("MCP list_tools result file not found: %s", result_file)
+            return []
+
+        output = output.strip()
+        if not output:
+            logger.warning(
+                "MCP list_tools result file is empty after successful exit: %s",
+                result_file,
+            )
+            return []
+
+        try:
+            tool_data = json.loads(output)
+        except json.JSONDecodeError as e:
+            logger.error(
+                "Failed to parse MCP list_tools output from %s. Raw output:\n%s",
+                result_file,
+                output,
+            )
+            raise RuntimeError(f"Failed to parse MCP list_tools output: {e}") from e
+
+        return [MCPTool.model_validate(item) for item in tool_data]
+    finally:
+        try:
+            await sandbox.exec("rm", "-f", result_file)
+        except Exception:
+            pass
+
+
+async def load_sandboxed_mcp_tools(
+    connection: Connection,
+    sandbox: Sandbox,
+    tool_builder: Callable[[MCPTool], AbstractBaseTool],
+) -> list[AbstractBaseTool]:
+    """Load MCP tool metadata in sandbox and wrap built tools for sandboxed calls."""
+    mcp_tools = await list_tools_in_sandbox(sandbox, connection)
+    wrapped_tools: list[AbstractBaseTool] = []
+
+    for mcp_tool in mcp_tools:
+        try:
+            tool = tool_builder(mcp_tool)
+            set_instance_sandbox_config(tool, _MCP_SANDBOX_CONFIG)
+            wrapped_tools.append(await create_sandboxed_tool(tool, sandbox))
+        except Exception as e:
+            logger.warning(
+                "Failed to wrap sandboxed MCP tool '%s': %s",
+                mcp_tool.name,
+                e,
+            )
+            continue
+
+    return wrapped_tools

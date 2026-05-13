@@ -12,6 +12,7 @@ from .....web.services.model_service import (
     _get_visible_user_ids,
     _is_model_visible_to_user,
 )
+from ....tracing import create_agent_tracer
 from ....utils.type_check import ensure_list
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 
@@ -1174,7 +1175,7 @@ class AgentTool(AbstractBaseTool):
                     db=self._db,
                     request=MinimalRequest(self._user_id),
                     user_id=self._user_id,
-                    include_mcp_tools=False,
+                    include_mcp_tools=True,
                     browser_tools_enabled=True,
                 )
                 all_tools = await ToolFactory.create_all_tools(temp_config)
@@ -1182,10 +1183,38 @@ class AgentTool(AbstractBaseTool):
                 for tool in all_tools:
                     if hasattr(tool, "metadata") and hasattr(tool.metadata, "category"):
                         category = str(tool.metadata.category.value)
+                        tool_name = getattr(tool, "name", None)
+
                         if category in agent.tool_categories:
-                            tool_name = getattr(tool, "name", None)
                             if tool_name:
                                 allowed_tools.append(tool_name)
+                        elif category == "mcp" and tool_name:
+                            for tc in agent.tool_categories:
+                                if tc.startswith("mcp:"):
+                                    server_name = (
+                                        tc.split(":", 1)[1]
+                                        .replace(" ", "_")
+                                        .replace("-", "_")
+                                    )
+                                    if tool_name.lower().startswith(
+                                        f"mcp_{server_name.lower()}_"
+                                    ):
+                                        allowed_tools.append(tool_name)
+                                        break
+                        elif category == "other" and tool_name:
+                            for tc in agent.tool_categories:
+                                if tc.startswith("mcp:"):
+                                    server_name = (
+                                        tc.split(":", 1)[1]
+                                        .replace(" ", "_")
+                                        .replace("-", "_")
+                                    )
+                                    if (
+                                        tool_name.lower()
+                                        == f"api_{server_name.lower()}_call"
+                                    ):
+                                        allowed_tools.append(tool_name)
+                                        break
 
             tool_config = WebToolConfig(
                 db=self._db,
@@ -1198,6 +1227,21 @@ class AgentTool(AbstractBaseTool):
                 allowed_tools=allowed_tools,
                 task_id=execution_task_id,
                 workspace_base_dir=self._workspace_base_dir,
+            )
+
+            tracer = create_agent_tracer(
+                task_id=execution_task_id,
+                user_id=self._user_id,
+                trace_name=f"xagent-agent-tool-{self._agent_id}",
+                session_id=self._task_id,
+                tags=["xagent", "agent-tool", "nested-agent"],
+                metadata={
+                    "source": "xagent-agent-tool",
+                    "task_id": execution_task_id,
+                    "parent_task_id": self._task_id,
+                    "agent_id": self._agent_id,
+                    "agent_name": agent.name,
+                },
             )
 
             # Create agent service
@@ -1215,7 +1259,7 @@ class AgentTool(AbstractBaseTool):
                 enable_workspace=True,
                 workspace_base_dir=self._workspace_base_dir,
                 task_id=execution_task_id,
-                tracer=None,
+                tracer=tracer,
             )
 
             # Build execution context
@@ -1267,6 +1311,7 @@ def get_published_agents_tools(
     excluded_agent_id: Optional[int] = None,
     include_draft: bool = False,
     draft_agent_ids_to_include: Optional[list[int]] = None,
+    allowed_agent_ids: Optional[list[int]] = None,
 ) -> list[AbstractBaseTool]:
     """
     Get tools for published (and optionally draft) agents.
@@ -1279,6 +1324,7 @@ def get_published_agents_tools(
         excluded_agent_id: Optional agent ID to exclude (to prevent self-calls)
         include_draft: Whether to include DRAFT agents (useful for dynamically created agents)
         draft_agent_ids_to_include: Specific DRAFT agent IDs to include (for agents created in current task)
+        allowed_agent_ids: Explicit agent IDs that are allowed to be injected
 
     Returns:
         List of AgentTool instances
@@ -1292,8 +1338,20 @@ def get_published_agents_tools(
     tools: list[AbstractBaseTool] = []
 
     try:
-        # Query agents - include both PUBLISHED and optionally DRAFT
-        if include_draft:
+        if allowed_agent_ids is not None:
+            normalized_allowed_agent_ids = [
+                int(agent_id)
+                for agent_id in allowed_agent_ids
+                if isinstance(agent_id, int)
+            ]
+            if not normalized_allowed_agent_ids:
+                return []
+            query = db.query(Agent).filter(
+                Agent.user_id == user_id,
+                Agent.id.in_(normalized_allowed_agent_ids),
+                Agent.status.in_(["published"]),  # type: ignore[attr-defined]
+            )
+        elif include_draft:
             # Include both PUBLISHED and DRAFT agents
             query = db.query(Agent).filter(
                 Agent.user_id == user_id,
@@ -1329,7 +1387,10 @@ def get_published_agents_tools(
                 if draft_agent.id not in existing_ids:
                     agents.append(draft_agent)
 
-        agent_types = "PUBLISHED and DRAFT" if include_draft else "PUBLISHED"
+        if allowed_agent_ids is not None:
+            agent_types = "selected PUBLISHED"
+        else:
+            agent_types = "PUBLISHED and DRAFT" if include_draft else "PUBLISHED"
         logger.info(
             f"Found {len(agents)} {agent_types} agents (excluded: {excluded_agent_id})"
         )
@@ -1387,16 +1448,18 @@ async def create_agent_tools(config: "WebToolConfig") -> list[AbstractBaseTool]:
             return []
 
         excluded_agent_id = config.get_excluded_agent_id() if config else None
+        delegate_agent_ids = config.get_delegate_agent_ids() if config else None
+        if not delegate_agent_ids:
+            delegate_agent_ids = None
 
-        # Only include PUBLISHED agents by default
-        # DRAFT agents are only available within the same task context after creation
         return get_published_agents_tools(
             db=db,
             user_id=user_id,
             task_id=config.get_task_id(),
             workspace_base_dir=None,  # Will use get_uploads_dir() default
             excluded_agent_id=excluded_agent_id,
-            include_draft=False,  # Only PUBLISHED agents
+            include_draft=False,  # Only PUBLISHED agents by default
+            allowed_agent_ids=delegate_agent_ids,
         )
     except Exception as e:
         logger.warning(f"Failed to create agent tools: {e}")

@@ -20,7 +20,7 @@ from xagent.core.tools.adapters.vibe.sandboxed_tool.sandbox_config import (
     sandbox_config,
 )
 from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
-    _SANDBOX_SRC_ROOT,
+    SANDBOX_SRC_ROOT,
     SandboxedToolWrapper,
     _extract_init_params,
     _serialize_init_params,
@@ -166,7 +166,7 @@ class TestBuildExecutionCommand:
         )
         assert command[:2] == [
             "python",
-            f"{_SANDBOX_SRC_ROOT}/xagent/core/tools/adapters/vibe/sandboxed_tool/tool_runner.py",
+            f"{SANDBOX_SRC_ROOT}/xagent/core/tools/adapters/vibe/sandboxed_tool/tool_runner.py",
         ]
         assert "--execution-spec-b64" in command
         spec_idx = command.index("--execution-spec-b64")
@@ -237,7 +237,7 @@ class TestBuildExecutionEnv:
     def test_always_includes_pythonpath(self):
         wrapper = _create_test_wrapper(_FakeToolNoParams())
         env = wrapper._build_execution_env()
-        assert env["PYTHONPATH"] == _SANDBOX_SRC_ROOT
+        assert env["PYTHONPATH"] == SANDBOX_SRC_ROOT
 
     def test_picks_up_host_env(self, monkeypatch):
         monkeypatch.setenv("MY_API_KEY", "secret")

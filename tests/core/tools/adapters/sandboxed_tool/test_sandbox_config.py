@@ -7,10 +7,12 @@ from tests.core.tools.adapters.sandboxed_tool.conftest import (
 )
 from xagent.core.tools.adapters.vibe.function import FunctionTool
 from xagent.core.tools.adapters.vibe.sandboxed_tool.sandbox_config import (
+    SandboxConfig,
     extract_bound_method_target,
-    get_class_sandbox_config,
+    get_sandbox_config,
     resolve_sandbox_config,
     sandbox_config,
+    set_instance_sandbox_config,
 )
 
 
@@ -67,17 +69,17 @@ def _make_closure_tool() -> FunctionTool:
 class TestSandboxConfig:
     """Tests for sandbox config helper functions."""
 
-    def test_get_class_sandbox_config(self):
+    def test_get_sandbox_config(self):
         """Configured classes should expose sandbox metadata."""
-        config = get_class_sandbox_config(_ConfiguredTool())
+        config = get_sandbox_config(_ConfiguredTool())
         assert config is not None
         assert config.enabled is True
         assert config.packages == ("sqlalchemy",)
         assert config.env_vars == ("DB_URL",)
 
-    def test_get_class_sandbox_config_without_decorator(self):
+    def test_get_sandbox_config_without_decorator(self):
         """Undecorated classes should not expose sandbox metadata."""
-        assert get_class_sandbox_config(_UnconfiguredTool()) is None
+        assert get_sandbox_config(_UnconfiguredTool()) is None
 
     def test_extract_bound_method_target(self):
         """Bound-method FunctionTools should expose owner and method name."""
@@ -109,3 +111,11 @@ class TestSandboxConfig:
         config = resolve_sandbox_config(_DisabledTool())
         assert config is not None
         assert config.enabled is False
+
+    def test_set_sandbox_config(self):
+        """Set sandbox config."""
+        tool = _UnconfiguredTool()
+        set_instance_sandbox_config(tool, SandboxConfig(packages=("mcp>=1.12.4",)))
+        config = get_sandbox_config(tool)
+        assert config is not None
+        assert config.packages == ("mcp>=1.12.4",)

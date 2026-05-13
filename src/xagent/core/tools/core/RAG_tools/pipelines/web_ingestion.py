@@ -204,14 +204,13 @@ async def run_web_ingestion(
                             final_file_id,
                         )
                     except Exception as e:
-                        logger.warning(
-                            "File handler failed for %s: %s. Using temporary file instead.",
-                            crawl_result.url,
-                            e,
+                        logger.exception("File handler failed for %s", crawl_result.url)
+                        failure_message = (
+                            f"File persistence failed for {crawl_result.url}: {e}"
                         )
-                        final_file_path = temp_file
-                        final_file_id = None
-                        copied_persistent_file = None
+                        failed_urls[crawl_result.url] = failure_message
+                        warnings.append(failure_message)
+                        continue
 
                 try:
                     # Ingest the file
@@ -296,19 +295,11 @@ async def run_web_ingestion(
     # (pages_failed includes both crawl failures and ingestion failures)
     pages_failed = len(failed_urls)
 
-    # Determine overall status
-    # Check if there were any ingestion failures
-    # (in failed_urls but not in crawler failed_urls)
-    has_ingestion_failures = any(
-        url in failed_urls and url not in crawler.failed_urls
-        for url in [r.url for r in crawl_results if r.status == "success"]
-    )
-
     # Status determination:
     # - "error": No docs created AND there were actual failures
     # - "partial": Some docs created but some failures
     # - "success": No failures (empty results are successful)
-    total_failures = pages_failed + (1 if has_ingestion_failures else 0)
+    total_failures = pages_failed
 
     if documents_created == 0 and total_failures > 0:
         status = "error"
@@ -318,6 +309,28 @@ async def run_web_ingestion(
         status = "success"
 
     crawled_urls_list = [r.url for r in crawl_results if r.status == "success"]
+
+    # Build a status-aware message. Previously this was unconditionally
+    # "Web ingestion completed: ..." even on error, which produced the
+    # "red error toast + green-toned 'completed' text" UX in the frontend
+    # whenever every crawl attempt got blocked. On error/partial we now
+    # surface the first failing URL and its reason so the user sees
+    # something actionable.
+    if status == "error" and failed_urls:
+        first_url, first_err = next(iter(failed_urls.items()))
+        message = f"Web ingestion failed: {first_url} returned {first_err}"
+    elif status == "partial" and failed_urls:
+        first_url, first_err = next(iter(failed_urls.items()))
+        message = (
+            f"Web ingestion partial: {documents_created} documents from "
+            f"{pages_crawled} pages, {len(failed_urls)} failed "
+            f"(first: {first_url} returned {first_err})"
+        )
+    else:
+        message = (
+            f"Web ingestion completed: {documents_created} documents, "
+            f"{total_chunks} chunks, {total_embeddings} embeddings"
+        )
 
     result = WebIngestionResult(
         status=status,
@@ -330,10 +343,7 @@ async def run_web_ingestion(
         embeddings_created=total_embeddings,
         crawled_urls=crawled_urls_list,
         failed_urls=failed_urls,
-        message=(
-            f"Web ingestion completed: {documents_created} documents, "
-            f"{total_chunks} chunks, {total_embeddings} embeddings"
-        ),
+        message=message,
         warnings=warnings,
         elapsed_time_ms=elapsed_ms,
     )

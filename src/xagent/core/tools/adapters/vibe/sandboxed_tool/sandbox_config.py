@@ -42,12 +42,21 @@ def sandbox_config(
     return decorator
 
 
-def get_class_sandbox_config(instance: Any) -> SandboxConfig | None:
-    """Return sandbox config declared on an instance's class, if present."""
+def get_sandbox_config(instance: Any) -> SandboxConfig | None:
+    """Return sandbox config declared on an instance or its class, if present."""
+    instance_config = getattr(instance, "__sandbox_config__", None)
+    if isinstance(instance_config, SandboxConfig):
+        return instance_config
+
     config = getattr(instance.__class__, "__sandbox_config__", None)
     if not isinstance(config, SandboxConfig):
         return None
     return config
+
+
+def set_instance_sandbox_config(instance: Any, config: SandboxConfig) -> None:
+    """Attach sandbox config to a single instance."""
+    setattr(instance, "__sandbox_config__", config)
 
 
 def extract_bound_method_target(tool: FunctionTool) -> tuple[Any, str] | None:
@@ -77,6 +86,6 @@ def resolve_sandbox_config(tool: Tool) -> SandboxConfig | None:
             return None
 
         instance, _ = function_target
-        return get_class_sandbox_config(instance)
+        return get_sandbox_config(instance)
 
-    return get_class_sandbox_config(tool)
+    return get_sandbox_config(tool)

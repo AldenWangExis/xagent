@@ -1168,21 +1168,42 @@ async def test_ensure_collection_access_returns_404_when_collection_absent_globa
     assert mock_list.await_count == 2
 
 
-def test_kb_delete_physical_cleanup_failure_aborts_operation(test_env, temp_uploads):
-    """Test that physical cleanup (move-to-trash) failure aborts database deletion."""
-    app, headers, user, _ = test_env
+def test_kb_delete_physical_cleanup_failure_preserves_uploaded_file_records(
+    test_env, temp_uploads
+):
+    """Physical cleanup failure should preserve UploadedFile rows for retry."""
+    app, headers, user, session_local = test_env
     client = TestClient(app)
+    from xagent.web.services.kb_collection_service import CollectionPhysicalDeleteResult
 
     collection_name = "kb_to_delete_fail"
 
     # Pre-create the collection directory
     coll_dir = temp_uploads / f"user_{user.id}" / collection_name
     coll_dir.mkdir(parents=True, exist_ok=True)
-    (coll_dir / "some_file.txt").write_text("data")
+    file_path = coll_dir / "some_file.txt"
+    file_path.write_text("data")
 
-    # Mock delete_collection to return success (database deletion would succeed)
+    db = session_local()
+    upload = UploadedFile(
+        user_id=user.id,
+        filename=file_path.name,
+        storage_path=str(file_path),
+        mime_type="text/plain",
+        file_size=file_path.stat().st_size,
+    )
+    db.add(upload)
+    db.commit()
+    db.refresh(upload)
+    file_id = upload.file_id
+    db.close()
+
     with (
-        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb._check_can_delete_collection"),
+        patch("xagent.web.api.kb.get_vector_index_store") as mock_get_vector_store,
+        patch(
+            "xagent.web.api.kb.delete_collection_physical_dir"
+        ) as mock_physical_delete,
         patch("xagent.web.api.kb.delete_collection") as mock_delete,
         patch(
             "xagent.web.services.kb_collection_service.move_collection_dir_to_trash"
@@ -1199,21 +1220,34 @@ def test_kb_delete_physical_cleanup_failure_aborts_operation(test_env, temp_uplo
             affected_documents=[],
             deleted_counts={},
         )
-
-        # Simulate move-to-trash failure (delete now uses rename-to-trash, not rmtree)
+        mock_get_vector_store.return_value.list_document_records.side_effect = [
+            [
+                DocumentRecord(
+                    doc_id="doc-1", file_id=file_id, source_path=str(file_path)
+                )
+            ],
+            [],
+        ]
+        mock_physical_delete.return_value = CollectionPhysicalDeleteResult(
+            status="failed",
+            error="Permission denied",
+            collection_dir=coll_dir,
+        )
         mock_move_to_trash.side_effect = PermissionError("Permission denied")
 
-        # Attempt to delete collection
         response = client.delete(
             f"/api/kb/collections/{collection_name}", headers=headers
         )
 
-        # Should fail with 500 (physical move failed, operation aborted)
-        assert response.status_code == 500
-        assert "cannot move physical files" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    assert response.json()["status"] == "partial_success"
 
-        # Verify directory still exists (operation was aborted)
-        assert coll_dir.exists()
+    # Physical file remains, so SQL metadata must remain for retry cleanup.
+    db = session_local()
+    remaining = db.query(UploadedFile).filter(UploadedFile.file_id == file_id).first()
+    db.close()
+    assert remaining is not None
+    assert coll_dir.exists()
 
 
 def test_kb_delete_returns_physical_cleanup_status(test_env, temp_uploads):
@@ -1885,7 +1919,44 @@ def test_kb_ingest_passes_file_id_to_pipeline(test_env, temp_uploads):
         session.close()
 
 
-def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
+def test_kb_ingest_setup_failure_cleans_new_collection_config(test_env, temp_uploads):
+    """Setup failures after config save should not leave config rows for new collections."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app, raise_server_exceptions=False)
+    metadata_store = MagicMock()
+    metadata_store.save_collection_config = AsyncMock()
+    metadata_store.delete_collection_metadata = AsyncMock(
+        return_value={"metadata_rows": 0, "config_rows": 1}
+    )
+
+    with (
+        patch(
+            "xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store",
+            return_value=metadata_store,
+        ),
+        patch(
+            "xagent.web.api.kb._upsert_uploaded_file_record",
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        response = client.post(
+            "/api/kb/ingest",
+            files={"file": ("test_doc.txt", b"content", "text/plain")},
+            data={"collection": "new_collection"},
+            headers=headers,
+        )
+
+    assert response.status_code == 500
+    metadata_store.delete_collection_metadata.assert_awaited_once_with(
+        collection_name="new_collection",
+        user_id=1,
+        is_admin=False,
+        delete_orphaned_metadata=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
     """Local rollback should clear ingestion status with the caller's admin scope."""
 
     from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
@@ -1906,7 +1977,7 @@ def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
         patch("xagent.web.api.kb.clear_ingestion_status") as mock_clear_status,
         patch("xagent.web.api.kb._restore_ingest_file_backup"),
     ):
-        kb_module._rollback_failed_ingestion(
+        await kb_module._rollback_failed_ingestion(
             db=db,
             user=user,
             collection_name="cloud-coll",
@@ -1925,6 +1996,85 @@ def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
         user_id=7,
         is_admin=True,
     )
+
+
+def test_kb_ingest_cloud_all_failures_clean_new_collection_config(test_env) -> None:
+    """Cloud ingest should remove saved config when a brand-new collection never ingests anything."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+    metadata_store = MagicMock()
+    metadata_store.save_collection_config = AsyncMock()
+    metadata_store.delete_collection_metadata = AsyncMock(
+        return_value={"metadata_rows": 0, "config_rows": 1}
+    )
+
+    with patch(
+        "xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store",
+        return_value=metadata_store,
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_new_collection",
+                "files": [
+                    {
+                        "provider": "unsupported",
+                        "fileId": "file-1",
+                        "fileName": "doc.txt",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "error"
+    metadata_store.delete_collection_metadata.assert_awaited_once_with(
+        collection_name="cloud_new_collection",
+        user_id=1,
+        is_admin=False,
+        delete_orphaned_metadata=True,
+    )
+
+
+def test_kb_ingest_cloud_denied_request_does_not_persist_collection_config(
+    test_env,
+) -> None:
+    from fastapi import HTTPException
+
+    app, headers, _user, _ = test_env
+    client = TestClient(app, raise_server_exceptions=False)
+    metadata_store = MagicMock()
+    metadata_store.save_collection_config = AsyncMock()
+
+    with (
+        patch(
+            "xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store",
+            return_value=metadata_store,
+        ),
+        patch(
+            "xagent.web.api.kb._ensure_collection_access",
+            new_callable=AsyncMock,
+            side_effect=HTTPException(status_code=403, detail="Forbidden"),
+        ),
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "shared_collection",
+                "files": [
+                    {
+                        "provider": "unsupported",
+                        "fileId": "file-1",
+                        "fileName": "doc.txt",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 403
+    metadata_store.save_collection_config.assert_not_awaited()
 
 
 def test_kb_ingest_cloud_passes_file_id_to_pipeline(test_env, temp_uploads):

@@ -15,13 +15,6 @@ from .base import (
     SandboxTemplate,
     TemplateType,
 )
-from .docker_sandbox import (
-    DockerSandbox,
-    DockerSandboxService,
-    DockerStore,
-    MemDockerStore,
-    is_docker_available,
-)
 
 # Use the `latest` image as a fallback
 # We should pin the version at release by env "SANDBOX_IMAGE" (`latest` may lead to caching problems)
@@ -39,11 +32,6 @@ __all__ = [
     "ExecResult",
     "Sandbox",
     "SandboxService",
-    "DockerSandbox",
-    "DockerStore",
-    "MemDockerStore",
-    "DockerSandboxService",
-    "is_docker_available",
 ]
 
 try:
@@ -59,6 +47,25 @@ try:
         "BoxliteStore",
         "MemBoxliteStore",
         "BoxliteSandboxService",
+    ]
+except ImportError:
+    pass
+
+try:
+    from .docker_sandbox import (
+        DockerSandbox,
+        DockerSandboxService,
+        DockerStore,
+        MemDockerStore,
+        is_docker_available,
+    )
+
+    __all__ += [
+        "DockerSandbox",
+        "DockerSandboxService",
+        "DockerStore",
+        "MemDockerStore",
+        "is_docker_available",
     ]
 except ImportError:
     pass

@@ -21,8 +21,8 @@ from openai.types.chat.chat_completion_message_tool_call import (
 )
 
 from xagent.core.model import ChatModelConfig, EmbeddingModelConfig, RerankModelConfig
-from xagent.core.observability.langfuse_tracer import init_tracer, reset_tracer
 from xagent.core.tools.core.RAG_tools.storage import reset_rag_storage_for_tests
+from xagent.core.tracing.langfuse import reset_langfuse_client
 
 # YAML entrypoint has been removed, commenting out these imports
 # from xagent.entrypoint.yaml.parser import MigrationManager
@@ -66,7 +66,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "real_rag: tests that require real embedding API (DASHSCOPE_API_KEY or ZHIPU_API_KEY)",
+        "real_rag: tests that require DashScope embedding API config",
     )
     config.addinivalue_line(
         "markers",
@@ -78,9 +78,9 @@ def pytest_collection_modifyitems(config, items):
     """Skip Docker tests unless --run-special is specified.
 
     Also automatically skip tests that require unavailable external dependencies.
-    Tests marked with `pytest.mark.real_rag` require embedding API keys
-    (DASHSCOPE_API_KEY or ZHIPU_API_KEY). If these keys are not configured
-    in the environment, the tests are automatically skipped rather than failing.
+    Tests marked with `pytest.mark.real_rag` require DashScope embedding
+    configuration. If this is not configured in the environment, the tests are
+    automatically skipped rather than failing.
 
     Tests marked with `pytest.mark.requires_network` require network access.
     These tests are skipped unless --run-special is specified or
@@ -95,33 +95,37 @@ def pytest_collection_modifyitems(config, items):
             if "docker" in item.keywords:
                 item.add_marker(skip_docker)
 
-    # Skip real_rag tests when embedding API keys are unavailable
-    # Check for actual API keys, not placeholder values from example.env
-    dashscope_key = os.getenv("DASHSCOPE_API_KEY", "")
-    zhipu_key = os.getenv("ZHIPU_API_KEY", "")
+    # Skip real_rag tests when DashScope embedding config is unavailable.
+    # Check for actual values, not placeholder values from example.env.
+    dashscope_key = os.getenv("DASHSCOPE_EMBEDDING_API_KEY") or os.getenv(
+        "DASHSCOPE_API_KEY", ""
+    )
+    dashscope_model = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "")
 
     # Common placeholder patterns that indicate the key is not set
     placeholder_patterns = [
         "your-dashscope-api-key",
+        "your-dashscope-embedding-model",
         "your-api-key",
-        "your-zhipu-api-key",
         "test-key",
     ]
 
-    def is_valid_key(key: str) -> bool:
-        """Check if the key is not a placeholder value."""
-        if not key:
+    def is_valid_value(value: str) -> bool:
+        """Check if the config value is not a placeholder value."""
+        if not value:
             return False
-        key_lower = key.lower().strip()
+        key_lower = value.lower().strip()
         for pattern in placeholder_patterns:
             if pattern in key_lower:
                 return False
         return True
 
-    has_embedding_api = is_valid_key(dashscope_key) or is_valid_key(zhipu_key)
-    if not has_embedding_api:
+    has_dashscope_embedding_config = is_valid_value(dashscope_key) and is_valid_value(
+        dashscope_model
+    )
+    if not has_dashscope_embedding_config:
         skip_real_rag = pytest.mark.skip(
-            reason="Requires DASHSCOPE_API_KEY or ZHIPU_API_KEY environment variable"
+            reason="Requires (DASHSCOPE_API_KEY or DASHSCOPE_EMBEDDING_API_KEY) + DASHSCOPE_EMBEDDING_MODEL environment variables"
         )
         for item in items:
             if "real_rag" in item.keywords:
@@ -502,23 +506,11 @@ def sample_openai_model():
 
 
 @pytest.fixture
-def langfuse_tracer_reset():
-    """Fixture to reset Langfuse tracer before and after each test."""
-    reset_tracer()
+def langfuse_client_reset():
+    """Fixture to reset the shared Langfuse client before and after each test."""
+    reset_langfuse_client()
     yield
-    reset_tracer()
-
-
-@pytest.fixture
-def disabled_langfuse_config(temp_dir):
-    """Fixture providing temporary directory with disabled Langfuse config."""
-    config_data = {"enabled": False}
-    config_path = f"{temp_dir}/langfuse_config.json"
-    with open(config_path, "w") as f:
-        json.dump(config_data, f)
-
-    init_tracer(temp_dir)
-    yield temp_dir, config_path
+    reset_langfuse_client()
 
 
 @pytest.fixture
@@ -652,16 +644,18 @@ def check_langfuse_env():
     """Check required Langfuse environment variables - used by integration tests."""
     public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
     secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-    host = os.getenv("LANGFUSE_HOST")
+    base_url = os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST")
 
     if not public_key:
         pytest.fail("LANGFUSE_PUBLIC_KEY environment variable is required")
     if not secret_key:
         pytest.fail("LANGFUSE_SECRET_KEY environment variable is required")
-    if not host:
-        pytest.fail("LANGFUSE_HOST environment variable is required")
+    if not base_url:
+        pytest.fail(
+            "LANGFUSE_BASE_URL or LANGFUSE_HOST environment variable is required"
+        )
 
-    return public_key, secret_key, host
+    return public_key, secret_key, base_url
 
 
 @pytest.fixture
