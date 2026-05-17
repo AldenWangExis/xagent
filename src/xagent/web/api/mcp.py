@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ...core.tools.core.mcp.data_config import MCPServerConfig
 from ...core.tools.core.mcp.manager.db import DatabaseMCPServerManager
+from ...core.tools.core.mcp.model import SENSITIVE_AUTH_FIELDS
 from ..auth_dependencies import get_current_user
 from ..mcp_apps import get_all_mcp_apps, get_app_by_name
 from ..models.database import get_db
@@ -63,8 +64,8 @@ class MCPServerResponse(BaseModel):
     is_active: bool
     is_default: bool
     transport_display: str
-    created_at: str
-    updated_at: str
+    created_at: Optional[str]
+    updated_at: Optional[str]
     connected_account: Optional[str] = None
     app_id: Optional[str] = None
     provider: Optional[str] = None
@@ -172,6 +173,11 @@ class ConfigFieldParser:
             if fallback_parser:
                 return fallback_parser(value)
             return value
+
+
+def _format_optional_datetime(value: object) -> Optional[str]:
+    """Serialize datetimes while tolerating ORM attributes without DB timestamps."""
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 class MCPConfigFieldRegistry:
@@ -306,7 +312,7 @@ def _update_server_from_config(server: MCPServer, config: MCPServerConfig) -> No
                 from xagent.core.utils.encryption import encrypt_value
 
                 encrypted_auth = value.copy()
-                for key in ["bearer_token", "api_key_value", "client_secret"]:
+                for key in SENSITIVE_AUTH_FIELDS:
                     if key in encrypted_auth and encrypted_auth[key]:
                         # If masked, retain the existing encrypted value from the database
                         if encrypted_auth[key] == "********":
@@ -379,7 +385,7 @@ def _db_server_to_response(
     auth_config = config.get("auth")
     if auth_config and isinstance(auth_config, dict):
         masked_auth = auth_config.copy()
-        for key in ["bearer_token", "api_key_value", "client_secret"]:
+        for key in SENSITIVE_AUTH_FIELDS:
             if key in masked_auth and masked_auth[key]:
                 masked_auth[key] = "********"
         config["auth"] = masked_auth
@@ -394,8 +400,8 @@ def _db_server_to_response(
         is_active=user_mcp.is_active,
         is_default=user_mcp.is_default,
         transport_display=server.transport_display,
-        created_at=str(server.created_at.isoformat()),
-        updated_at=str(server.updated_at.isoformat()),
+        created_at=_format_optional_datetime(server.created_at),
+        updated_at=_format_optional_datetime(server.updated_at),
         connected_account=connected_account,
         app_id=app_id,
         provider=provider,
@@ -658,8 +664,8 @@ def get_mcp_servers(
                     is_active=user_api.is_active,
                     is_default=user_api.is_default,
                     transport_display="Custom API",
-                    created_at=str(api.created_at.isoformat()),
-                    updated_at=str(api.updated_at.isoformat()),
+                    created_at=_format_optional_datetime(api.created_at),
+                    updated_at=_format_optional_datetime(api.updated_at),
                 )
             )
 

@@ -3,6 +3,7 @@
 import os
 import shutil
 import tempfile
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -32,9 +33,14 @@ client = TestClient(app_for_tests)
 
 
 @pytest.fixture(autouse=True)
-def _test_db():
+def _test_db(monkeypatch):
     """Create and tear down a temporary SQLite database for each test."""
     from xagent.web.models.database import init_db
+
+    monkeypatch.setattr(
+        "xagent.web.api.agents.find_missing_knowledge_bases",
+        AsyncMock(return_value=[]),
+    )
 
     temp_dir = tempfile.mkdtemp()
     temp_db_path = os.path.join(temp_dir, "test.db")
@@ -122,6 +128,24 @@ class TestCreateAgentKbValidation:
         assert data["knowledge_bases"] == ["my_kb"]
         assert "knowledge" in data["tool_categories"]
 
+    def test_create_with_missing_kb_returns_400(self, monkeypatch):
+        monkeypatch.setattr(
+            "xagent.web.api.agents.find_missing_knowledge_bases",
+            AsyncMock(return_value=["missing_kb"]),
+        )
+        headers = _headers()
+        resp = client.post(
+            "/api/agents",
+            headers=headers,
+            json={
+                **AGENT_BASE,
+                "knowledge_bases": ["missing_kb"],
+                "tool_categories": ["basic", "knowledge"],
+            },
+        )
+        assert resp.status_code == 400
+        assert "missing_kb" in resp.json()["detail"]
+
     def test_create_without_kb_without_knowledge_tool_succeeds(self):
         headers = _headers()
         resp = client.post(
@@ -207,6 +231,21 @@ class TestUpdateAgentKbValidation:
         assert resp.status_code == 200
         assert resp.json()["knowledge_bases"] == ["new_kb"]
 
+    def test_update_add_missing_kb_returns_400(self, monkeypatch):
+        headers = _headers()
+        agent_id = self._create_agent(headers, tool_categories=["basic", "knowledge"])
+        monkeypatch.setattr(
+            "xagent.web.api.agents.find_missing_knowledge_bases",
+            AsyncMock(return_value=["missing_kb"]),
+        )
+        resp = client.put(
+            f"/api/agents/{agent_id}",
+            headers=headers,
+            json={"knowledge_bases": ["missing_kb"]},
+        )
+        assert resp.status_code == 400
+        assert "missing_kb" in resp.json()["detail"]
+
     def test_update_add_kb_and_knowledge_tool_together_succeeds(self):
         headers = _headers()
         agent_id = self._create_agent(headers)
@@ -288,6 +327,9 @@ class TestEnhanceSystemPromptWithKb:
         assert "already selected" in result
         assert "Do not call list_knowledge_bases" in result
         assert "use knowledge_search directly" in result
+        assert "start with one targeted knowledge_search" in result
+        assert "inspect all returned results as one evidence set" in result
+        assert "Search again only when the returned results as a group" in result
 
     def test_with_kb_no_system_prompt_returns_priority_only(self):
         result = enhance_system_prompt_with_kb(None, ["kb1"])

@@ -198,7 +198,7 @@ export function PlanMemoryDetails({
                         </span>
                         {step.tool_names && step.tool_names.length > 0 && (
                           <Badge variant="outline" className="text-xs">
-                            {step.tool_names.join(", ")}
+                            {t('agent.layout.center.labels.suggestedTools')} {step.tool_names.join(", ")}
                           </Badge>
                         )}
                       </div>

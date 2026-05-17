@@ -158,8 +158,8 @@ class TestCreateAgentTool:
                 pass
 
     @pytest.mark.asyncio
-    async def test_create_agent_duplicate_name_error(self) -> None:
-        """Test that duplicate agent names are rejected."""
+    async def test_create_agent_duplicate_name_auto_renames(self) -> None:
+        """Test that duplicate agent names are auto-renamed and created."""
         db, db_path = _create_session()
         try:
             user = User(username="testuser3", password_hash="x", is_admin=False)
@@ -197,12 +197,126 @@ class TestCreateAgentTool:
                     {
                         "name": "duplicate_name",
                         "description": "Duplicate name test agent",
-                        "instructions": "This should fail",
+                        "instructions": "This should be auto-renamed",
                     }
                 )
 
-                assert result["status"] == "error"
-                assert "already exists" in result["message"].lower()
+                assert result["status"] == "success"
+                assert result["agent_name"] == "duplicate_name Assistant"
+                assert "auto-renamed" in result["message"].lower()
+
+                created_agent = (
+                    db.query(Agent)
+                    .filter(
+                        Agent.user_id == user.id,
+                        Agent.name == "duplicate_name Assistant",
+                    )
+                    .first()
+                )
+                assert created_agent is not None
+
+        finally:
+            db.close()
+            try:
+                import os
+
+                os.remove(db_path)
+            except OSError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_create_agent_rejects_missing_knowledge_base(self) -> None:
+        """Test that create_agent rejects knowledge bases that do not exist."""
+        db, db_path = _create_session()
+        try:
+            user = User(username="testuser_missing_kb", password_hash="x")
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            tool = CreateAgentTool(db=db, user_id=user.id)
+
+            with patch(
+                "xagent.core.tools.adapters.vibe.agent_tool.find_missing_knowledge_bases",
+                new=AsyncMock(return_value=["missing_kb"]),
+            ):
+                result = await tool.run_json_async(
+                    {
+                        "name": "kb_agent",
+                        "description": "Agent with KB",
+                        "instructions": "Use the KB.",
+                        "knowledge_bases": ["missing_kb"],
+                    }
+                )
+
+            assert result["status"] == "error"
+            assert "missing_kb" in result["message"]
+            assert db.query(Agent).filter(Agent.name == "kb_agent").first() is None
+
+        finally:
+            db.close()
+            try:
+                import os
+
+                os.remove(db_path)
+            except OSError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_create_agent_duplicate_name_uses_next_available_variant(
+        self,
+    ) -> None:
+        """Test that auto-rename skips occupied fallback names."""
+        db, db_path = _create_session()
+        try:
+            user = User(username="testuser3b", password_hash="x", is_admin=False)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            db.add_all(
+                [
+                    Agent(
+                        user_id=user.id,
+                        name="duplicate_name",
+                        status=AgentStatus.DRAFT,
+                    ),
+                    Agent(
+                        user_id=user.id,
+                        name="duplicate_name Assistant",
+                        status=AgentStatus.DRAFT,
+                    ),
+                ]
+            )
+            db.commit()
+
+            mock_llm = Mock()
+            mock_llm.model_id = "gpt-4"
+
+            with patch(
+                "xagent.web.services.llm_utils.UserAwareModelStorage"
+            ) as mock_storage_class:
+                mock_storage = Mock()
+                mock_storage.get_configured_defaults.return_value = (
+                    mock_llm,
+                    None,
+                    None,
+                    None,
+                )
+                mock_storage_class.return_value = mock_storage
+
+                tool = CreateAgentTool(db=db, user_id=user.id)
+
+                result = await tool.run_json_async(
+                    {
+                        "name": "duplicate_name",
+                        "description": "Duplicate name test agent",
+                        "instructions": "This should use the next fallback",
+                    }
+                )
+
+                assert result["status"] == "success"
+                assert result["agent_name"] == "duplicate_name V2"
 
         finally:
             db.close()
@@ -414,8 +528,57 @@ class TestUpdateAgentTool:
                 pass
 
     @pytest.mark.asyncio
-    async def test_update_published_agent_rejected(self) -> None:
-        """Test that published agents cannot be updated."""
+    async def test_update_agent_rejects_missing_knowledge_base(self) -> None:
+        """Test that update_agent rejects knowledge bases that do not exist."""
+        db, db_path = _create_session()
+        try:
+            user = User(username="testuser_update_missing_kb", password_hash="x")
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            existing_agent = Agent(
+                user_id=user.id,
+                name="kb_update_agent",
+                description="Original description",
+                instructions="Original instructions",
+                status=AgentStatus.DRAFT,
+                knowledge_bases=[],
+            )
+            db.add(existing_agent)
+            db.commit()
+            db.refresh(existing_agent)
+
+            tool = UpdateAgentTool(db=db, user_id=user.id)
+
+            with patch(
+                "xagent.core.tools.adapters.vibe.agent_tool.find_missing_knowledge_bases",
+                new=AsyncMock(return_value=["missing_kb"]),
+            ):
+                result = await tool.run_json_async(
+                    {
+                        "agent_id": existing_agent.id,
+                        "knowledge_bases": ["missing_kb"],
+                    }
+                )
+
+            assert result["status"] == "error"
+            assert "missing_kb" in result["message"]
+            db.refresh(existing_agent)
+            assert existing_agent.knowledge_bases == []
+
+        finally:
+            db.close()
+            try:
+                import os
+
+                os.remove(db_path)
+            except OSError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_update_published_agent_success_preserves_status(self) -> None:
+        """Test that published agents can be updated and remain published."""
         db, db_path = _create_session()
         try:
             user = User(
@@ -442,11 +605,67 @@ class TestUpdateAgentTool:
                 {
                     "agent_id": published_agent.id,
                     "name": "trying_to_rename",
+                    "instructions": "Updated published instructions",
+                }
+            )
+
+            assert result["status"] == "success"
+            assert result["agent_id"] == published_agent.id
+            assert result["agent_name"] == "trying_to_rename"
+            assert "Status: PUBLISHED" in result["message"]
+
+            db.refresh(published_agent)
+            assert published_agent.name == "trying_to_rename"
+            assert published_agent.instructions == "Updated published instructions"
+            assert published_agent.status == AgentStatus.PUBLISHED
+
+        finally:
+            db.close()
+            try:
+                import os
+
+                os.remove(db_path)
+            except OSError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_update_archived_agent_rejected(self) -> None:
+        """Test that archived agents cannot be updated."""
+        db, db_path = _create_session()
+        try:
+            user = User(username="testuser_archived", password_hash="x", is_admin=False)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            archived_agent = Agent(
+                user_id=user.id,
+                name="archived_agent",
+                description="Archived agent",
+                instructions="Original instructions",
+                status=AgentStatus.ARCHIVED,
+            )
+            db.add(archived_agent)
+            db.commit()
+            db.refresh(archived_agent)
+
+            tool = UpdateAgentTool(db=db, user_id=user.id)
+
+            result = await tool.run_json_async(
+                {
+                    "agent_id": archived_agent.id,
+                    "name": "trying_to_rename",
+                    "instructions": "Attempted update",
                 }
             )
 
             assert result["status"] == "error"
-            assert "only draft" in result["message"].lower()
+            assert "archived agents cannot be updated" in result["message"].lower()
+
+            db.refresh(archived_agent)
+            assert archived_agent.name == "archived_agent"
+            assert archived_agent.instructions == "Original instructions"
+            assert archived_agent.status == AgentStatus.ARCHIVED
 
         finally:
             db.close()

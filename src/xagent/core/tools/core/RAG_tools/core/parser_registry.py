@@ -36,6 +36,7 @@ PARSER_COMPATIBILITY: Dict[str, List[str]] = {
     ".sh": [],
     ".sql": [],
     ".html": ["deepdoc", "unstructured"],
+    ".htm": ["unstructured"],
     ".xml": [],
     ".yaml": [],
     ".yml": [],

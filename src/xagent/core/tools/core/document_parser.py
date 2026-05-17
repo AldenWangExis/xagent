@@ -106,6 +106,33 @@ async def parse_document(
             f"local={tool_args.capabilities.use_local_parser}"
         )
 
+    # If auto-routing, narrow parsers by file extension using the single
+    # source of truth (parser_registry) to avoid drift between the static
+    # compatibility table and individual parser class attributes.
+    ext: str | None = None
+    if not tool_args.parser_name:
+        ext = Path(resolved_file_path).suffix.lower()
+        # Lazy import to avoid circular dependency:
+        # parser_registry imports document_parser_registry from this module.
+        from .RAG_tools.core.parser_registry import get_supported_parsers
+
+        registry_supported = set(get_supported_parsers(ext))
+        ext_compatible = [p for p in available_parsers if p in registry_supported]
+
+        if not ext_compatible:
+            logger.warning(
+                "No compatible document parsers found for extension '%s'. "
+                "Available parsers by capability: %s, registry supported: %s",
+                ext,
+                ", ".join(available_parsers),
+                ", ".join(registry_supported) or "(none)",
+            )
+            raise ValueError(
+                f"Unsupported file type '{ext}'. No available parser can handle this extension."
+            )
+
+        available_parsers = ext_compatible
+
     # If a specific parser is requested, validate it's in the available list
     if tool_args.parser_name:
         if tool_args.parser_name not in available_parsers:
@@ -115,8 +142,7 @@ async def parse_document(
         selected_parser = tool_args.parser_name
     else:
         # Auto-route based on file extension
-        ext = Path(resolved_file_path).suffix.lower()
-
+        assert ext is not None
         if ext == ".pdf" and "deepdoc" in available_parsers:
             selected_parser = "deepdoc"
             logger.info(
@@ -127,6 +153,13 @@ async def parse_document(
             logger.info(
                 f"Auto-selected 'deepdoc' parser for spreadsheet file {ext}: {resolved_file_path}"
             )
+        elif ext in (".html", ".htm") and "unstructured" in available_parsers:
+            selected_parser = "unstructured"
+            logger.info(
+                "Auto-selected 'unstructured' parser for %s file: %s",
+                ext,
+                resolved_file_path,
+            )
         elif (
             ext
             in (
@@ -134,11 +167,10 @@ async def parse_document(
                 ".pptx",
                 ".doc",
                 ".docx",
+                ".csv",
                 ".txt",
                 ".md",
                 ".json",
-                ".html",
-                ".csv",
             )
             and "unstructured" in available_parsers
         ):

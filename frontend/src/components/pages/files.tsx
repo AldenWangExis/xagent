@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { getApiUrl } from "@/lib/utils"
+import { getApiUrl, getUploadApiUrl } from "@/lib/utils"
 import { apiRequest, getUploadErrorMessage, parseApiResponse, UPLOAD_ERROR_MESSAGES } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
 import { StandaloneFilePreviewDialog } from "@/components/file/standalone-file-preview-dialog"
@@ -173,7 +173,7 @@ export function FilesPage() {
       formData.append('task_type', 'general')
       formData.append('message', '')
 
-      const response = await apiRequest(`${getApiUrl()}/api/files/upload`, {
+      const response = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
         method: 'POST',
         body: formData
       })

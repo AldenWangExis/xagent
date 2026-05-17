@@ -92,6 +92,13 @@ export function ModelManagementDialog({
     return []
   }
 
+  const getDefaultAbilitiesForProvider = (category: string, providerId: string): string[] => {
+    if (category === 'llm' && providerId === 'deepseek') {
+      return ['chat', 'tool_calling', 'thinking_mode']
+    }
+    return getDefaultAbilitiesForCategory(category)
+  }
+
   const resetConnectionState = () => {
     setTestConnectionStatus('idle')
     setTestConnectionError(null)
@@ -146,7 +153,7 @@ export function ModelManagementDialog({
       base_url: getDefaultBaseUrlForProvider(defaultProvider, activeTab),
       temperature: activeTab === 'llm' ? undefined : undefined,
       dimension: activeTab === 'embedding' ? undefined : undefined,
-      abilities: getDefaultAbilitiesForCategory(activeTab),
+      abilities: getDefaultAbilitiesForProvider(activeTab, defaultProvider),
       default_config_types: []
     }
   }
@@ -233,7 +240,7 @@ export function ModelManagementDialog({
       base_url: providerConfig?.defaultBaseUrl || "",
       temperature: activeTab === 'llm' ? undefined : undefined,
       dimension: activeTab === 'embedding' ? undefined : undefined,
-      abilities: getDefaultAbilitiesForCategory(activeTab),
+      abilities: getDefaultAbilitiesForProvider(activeTab, managingProviderId),
       default_config_types: []
     })
     setEditingModel(null)
@@ -490,10 +497,10 @@ export function ModelManagementDialog({
             </div>
           </DialogContent>
         ) : viewMode === 'connect' ? (
-          <DialogContent className="sm:max-w-2xl bg-slate-50">
-            <DialogHeader>
-              <DialogTitle className="text-2xl font-bold">{t('models.dialog.connect.title')}</DialogTitle>
-              <DialogDescription>{t('models.dialog.connect.description')}</DialogDescription>
+          <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] overflow-hidden bg-slate-50 p-0 gap-0 flex flex-col">
+            <DialogHeader className="px-4 sm:px-6 py-4 border-b bg-white pr-12">
+              <DialogTitle className="text-xl sm:text-2xl font-bold text-left leading-tight">{t('models.dialog.connect.title')}</DialogTitle>
+              <DialogDescription className="text-left">{t('models.dialog.connect.description')}</DialogDescription>
             </DialogHeader>
 
             <Stepper
@@ -502,7 +509,7 @@ export function ModelManagementDialog({
                   label: t('models.dialog.connect.step1'),
                   content: (
                     <div className="flex flex-col gap-4 h-[400px]">
-                      <div className="flex gap-4">
+                      <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
                         <Select
                           value={formData.category}
                           onValueChange={(value) => {
@@ -526,7 +533,7 @@ export function ModelManagementDialog({
                             { value: "image", label: t('models.tabs.image') },
                             { value: "speech", label: t('models.tabs.speech') }
                           ]}
-                          className="w-[180px]"
+                          className="w-full sm:w-[180px]"
                         />
                         <div className="relative flex-1">
                           <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
@@ -554,7 +561,8 @@ export function ModelManagementDialog({
                                     model_provider: provider.id,
                                     model_name: "",
                                     base_url: getDefaultBaseUrlForProvider(provider.id, prev.category),
-                                    api_key: prev.model_provider === provider.id ? prev.api_key : ""
+                                    api_key: prev.model_provider === provider.id ? prev.api_key : "",
+                                    abilities: getDefaultAbilitiesForProvider(prev.category, provider.id),
                                   }))
                                 }}
                               >
@@ -677,7 +685,7 @@ export function ModelManagementDialog({
                           }}
                           options={fetchedModels.map(m => ({ value: m.id, label: m.id }))}
                           placeholder={fetchedModels.length > 0 ? t('models.form.selectModel') : t('models.form.enterModelName')}
-                          allowCustom={true}
+                          allowCustom={formData.model_provider !== 'deepseek'}
                           customPlaceholder={t('models.form.customModel')}
                           customButtonText={t('models.form.addCustom')}
                           onCustomAdd={(val) => {
@@ -906,7 +914,7 @@ export function ModelManagementDialog({
                 }
               ]}
               currentStep={connectStep}
-              className="mt-6"
+              className="mt-0 px-4 sm:px-6 py-4 flex-1 min-h-0 overflow-hidden"
             />
           </DialogContent>
         ) : (
@@ -938,7 +946,12 @@ export function ModelManagementDialog({
                   <Label htmlFor="category">{t('models.form.category')}</Label>
                   <Select
                     value={formData.category}
-                    onValueChange={(value) => setFormData({ ...formData, category: value })}
+                    onValueChange={(value) => setFormData({
+                      ...formData,
+                      category: value,
+                      base_url: formData.model_provider ? getDefaultBaseUrlForProvider(formData.model_provider, value) : formData.base_url,
+                      abilities: getDefaultAbilitiesForProvider(value, formData.model_provider),
+                    })}
                     disabled={!!editingModel}
                     options={[
                       { value: "llm", label: t('models.tabs.llm') },
@@ -953,7 +966,17 @@ export function ModelManagementDialog({
                   <Label htmlFor="model_provider">{t('models.form.provider')}</Label>
                   <Select
                     value={formData.model_provider}
-                    onValueChange={(value) => setFormData({ ...formData, model_provider: value })}
+                    onValueChange={(value) => {
+                      resetConnectionState()
+                      setFormData(prev => ({
+                        ...prev,
+                        model_provider: value,
+                        model_name: "",
+                        base_url: getDefaultBaseUrlForProvider(value, prev.category),
+                        api_key: prev.model_provider === value ? prev.api_key : "",
+                        abilities: getDefaultAbilitiesForProvider(prev.category, value),
+                      }))
+                    }}
                     disabled={!!editingModel}
                     options={providers
                       .filter(p => p.category.includes(formData.category as any))
@@ -1032,7 +1055,7 @@ export function ModelManagementDialog({
                     onValueChange={(value) => setFormData({ ...formData, model_name: value })}
                     options={fetchedModels.map(m => ({ value: m.id, label: m.id }))}
                     placeholder={t('models.form.selectModel')}
-                    allowCustom={true}
+                    allowCustom={formData.model_provider !== 'deepseek'}
                     customPlaceholder={t('models.form.enterModelName')}
                     customButtonText={t('models.form.addCustom')}
                     onCustomAdd={(value) => {

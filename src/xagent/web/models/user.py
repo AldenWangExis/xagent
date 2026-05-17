@@ -45,9 +45,6 @@ class User(Base):  # type: ignore
     user_custom_apis = relationship(
         "UserCustomApi", back_populates="user", cascade="all, delete-orphan"
     )
-    text2sql_databases = relationship(
-        "Text2SQLDatabase", back_populates="user", cascade="all, delete-orphan"
-    )
     user_models = relationship(
         "UserModel", back_populates="user", cascade="all, delete-orphan"
     )
@@ -68,6 +65,9 @@ class User(Base):  # type: ignore
     )
     tool_configs = relationship(
         "UserToolConfig", back_populates="user", cascade="all, delete-orphan"
+    )
+    template_relations = relationship(
+        "UserTemplateRelation", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

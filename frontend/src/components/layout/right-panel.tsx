@@ -339,10 +339,13 @@ function StepSummary({ step }: { step: StepExecution }) {
         </div>
       )}
 
-      {/* Tools */}
+      {/* Suggested tools */}
       {step.tool_names && step.tool_names.length > 0 && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Wrench className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+          <span className="text-base text-muted-foreground">
+            {t("agent.layout.center.labels.suggestedTools")}
+          </span>
           <span className="text-base font-mono text-muted-foreground bg-muted px-2 py-1 rounded">
             {step.tool_names.join(", ")}
           </span>

@@ -1,4 +1,4 @@
-import React, { useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { Interaction } from "@/contexts/app-context-chat"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -17,27 +17,71 @@ interface ClarificationFormProps {
   message?: string
   interactions: Interaction[]
   messageId?: string
+  active?: boolean
   onSend?: (message: string, files?: File[], metadata?: any) => Promise<void> | void
 }
 
-export function ClarificationForm({ interactions, messageId, onSend }: ClarificationFormProps) {
+export function ClarificationForm({ interactions, messageId, active = true, onSend }: ClarificationFormProps) {
   // If onSend is provided, use it (e.g., from builder chat), otherwise use useApp
-  let state, sendMessage: any;
+  let sendMessage: any, dispatch: any;
   try {
     const appCtx = useApp();
-    state = appCtx.state;
     sendMessage = appCtx.sendMessage;
-  } catch (e) {
+    dispatch = appCtx.dispatch;
+  } catch {
     // We might not be in the app context (e.g., agent builder chat)
-    state = { currentTask: { status: "completed" } };
   }
 
   const { t } = useI18n()
   const [formState, setFormState] = useState<Record<string, any>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isOpen, setIsOpen] = useState(true)
+  const [isSubmitted, setIsSubmitted] = useState(!active)
+  const [isOpen, setIsOpen] = useState(active)
 
-  const isTaskRunning = state?.currentTask?.status === "running"
+  useEffect(() => {
+    if (active) {
+      setIsSubmitted(false)
+      setIsOpen(true)
+    }
+  }, [active])
+
+  const normalizedInteractions = useMemo(() => {
+    const seenFields = new Set<string>()
+    return interactions.map((interaction: any, index) => {
+      const rawType = interaction.type
+      const type =
+        rawType === "text" || rawType === "input" || rawType === "textarea" || rawType === "string"
+          ? "text_input"
+          : rawType === "file" || rawType === "upload"
+            ? "file_upload"
+            : rawType === "number" || rawType === "integer"
+              ? "number_input"
+              : rawType === "boolean"
+                ? "confirm"
+                : rawType
+      const rawField = interaction.field || interaction.id || interaction.name || interaction.properties?.field || interaction.properties?.id || `response_${index}`
+      const baseField = typeof rawField === "string" && rawField.trim() ? rawField.trim() : `response_${index}`
+      const field = seenFields.has(baseField) ? `${baseField}_${index}` : baseField
+      seenFields.add(field)
+      const rawOptions = Array.isArray(interaction.options)
+        ? interaction.options
+        : Array.isArray(interaction.actions)
+          ? interaction.actions
+          : undefined
+      const options = rawOptions?.map((opt: any) => ({
+        value: typeof opt?.value === "string" ? opt.value : String(opt?.label || ""),
+        label: typeof opt?.label === "string" ? opt.label : String(opt?.value || ""),
+        description: typeof opt?.description === "string" ? opt.description : undefined,
+        action_type: typeof opt?.action_type === "string" ? opt.action_type : undefined,
+      })).filter((opt: { value: string; label: string }) => opt.value && opt.label)
+      return {
+        ...interaction,
+        type,
+        field,
+        ...(options ? { options } : {}),
+      }
+    }) as Interaction[]
+  }, [interactions])
 
   const handleInputChange = (field: string, value: any) => {
     setFormState((prev) => ({ ...prev, [field]: value }))
@@ -46,7 +90,7 @@ export function ClarificationForm({ interactions, messageId, onSend }: Clarifica
   const handleSubmit = async () => {
     // Construct the message
     const metadata: any = {}
-    const lines = interactions.flatMap(interaction => {
+    const lines = normalizedInteractions.flatMap(interaction => {
       const value = formState[interaction.field]
 
       // Skip empty values unless it's a boolean (confirm) which might be false
@@ -128,7 +172,11 @@ export function ClarificationForm({ interactions, messageId, onSend }: Clarifica
         await sendMessage(finalMessage, { force: true, metadata }, files)
       }
 
-      setIsOpen(false) // Collapse after submission
+      setIsSubmitted(true)
+      setIsOpen(false)
+      if (!onSend && dispatch) {
+        dispatch({ type: "UPDATE_TASK_STATUS", payload: { status: "running" } })
+      }
     } catch (error) {
       console.error("Failed to send clarification response", error)
       toast.error(t("chatPage.clarification.sendError"))
@@ -269,8 +317,10 @@ export function ClarificationForm({ interactions, messageId, onSend }: Clarifica
         )
 
       case "action_cards":
-        const isUploadSelected = typeof value === 'string' && (value.toLowerCase().includes('upload') || value.toLowerCase().includes('file'));
-        const isWebsiteSelected = typeof value === 'string' && (value.toLowerCase().includes('website') || value.toLowerCase().includes('url') || value.toLowerCase().includes('import'));
+        const selectedOption = interaction.options?.find((opt) => opt.value === value)
+        const selectedActionType = selectedOption?.action_type?.toLowerCase()
+        const isUploadSelected = selectedActionType === 'upload' || (typeof value === 'string' && (value.toLowerCase().includes('upload') || value.toLowerCase().includes('file')));
+        const isWebsiteSelected = selectedActionType === 'input_url' || (typeof value === 'string' && (value.toLowerCase().includes('website') || value.toLowerCase().includes('url') || value.toLowerCase().includes('import')));
 
         return (
           <div className="flex flex-col gap-4 w-full">
@@ -344,7 +394,7 @@ export function ClarificationForm({ interactions, messageId, onSend }: Clarifica
 
       <CollapsibleContent className="space-y-4 p-4">
         <div className="space-y-4">
-          {interactions.map((interaction, index) => (
+          {normalizedInteractions.map((interaction, index) => (
             <div key={`${interaction.field}-${index}`} className="space-y-2">
               <Label className="text-sm font-medium">
                 {interaction.label || interaction.field}
@@ -357,7 +407,7 @@ export function ClarificationForm({ interactions, messageId, onSend }: Clarifica
         </div>
 
         <div className="pt-2 flex gap-2">
-          <Button className="flex-1" size="sm" onClick={handleSubmit} disabled={isSubmitting || isTaskRunning}>
+          <Button className="flex-1" size="sm" onClick={handleSubmit} disabled={!active || isSubmitting || isSubmitted}>
             {isSubmitting ? t("chatPage.clarification.submitting") : t("chatPage.clarification.submit")}
           </Button>
         </div>

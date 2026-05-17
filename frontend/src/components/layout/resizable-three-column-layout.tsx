@@ -8,6 +8,7 @@ interface ResizableThreeColumnLayoutProps {
     rightPanel: React.ReactNode
     initialLeftWidth?: number // Percentage (0-100)
     initialMiddleWidth?: number // Percentage (0-100)
+    initialRightWidth?: number // Percentage (0-100)
     minLeftWidth?: number // Percentage (0-100)
     minMiddleWidth?: number // Percentage (0-100)
     minRightWidth?: number // Percentage (0-100)
@@ -21,6 +22,7 @@ export function ResizableThreeColumnLayout({
     rightPanel,
     initialLeftWidth = 25,
     initialMiddleWidth = 45,
+    initialRightWidth,
     minLeftWidth = 15,
     minMiddleWidth = 30,
     minRightWidth = 20,
@@ -28,7 +30,22 @@ export function ResizableThreeColumnLayout({
     showLeftPanel = true
 }: ResizableThreeColumnLayoutProps) {
     const [leftWidth, setLeftWidth] = useState(initialLeftWidth)
-    const [middleWidth, setMiddleWidth] = useState(initialMiddleWidth)
+    const [middleWidth, setMiddleWidth] = useState(() => {
+        if (typeof initialRightWidth === "number") {
+            return Math.max(0, 100 - initialLeftWidth - initialRightWidth)
+        }
+        return initialMiddleWidth
+    })
+    const [isMobile, setIsMobile] = useState(false)
+
+    useEffect(() => {
+        const checkMobile = () => {
+            setIsMobile(window.innerWidth < 768)
+        }
+        checkMobile()
+        window.addEventListener('resize', checkMobile)
+        return () => window.removeEventListener('resize', checkMobile)
+    }, [])
 
     const [activeHandle, setActiveHandle] = useState<'left' | 'right' | null>(null)
     const containerRef = React.useRef<HTMLDivElement>(null)
@@ -94,23 +111,27 @@ export function ResizableThreeColumnLayout({
     return (
         <div
             ref={containerRef}
-            className={cn("flex w-full h-full overflow-hidden", className)}
+            className={cn("flex flex-col md:flex-row w-full h-full min-h-0 md:overflow-hidden overflow-y-auto pb-16 lg:pb-0", className)}
         >
             {/* Left Panel */}
             <div
                 style={{
-                    width: `${leftWidth}%`,
-                    display: showLeftPanel ? 'flex' : 'none'
+                    width: isMobile ? '100%' : (showLeftPanel ? `${leftWidth}%` : '0%'),
                 }}
-                className="h-full flex-col min-h-0 overflow-hidden"
+                className={cn(
+                    "w-full md:w-auto h-[60vh] max-h-[600px] md:h-full md:max-h-none flex-col min-h-0 md:overflow-hidden border-b md:border-b-0 shrink-0",
+                    showLeftPanel ? 'flex' : 'hidden md:hidden'
+                )}
             >
                 {leftPanel}
             </div>
 
-            {/* Left Resizer Handle */}
+            {/* Left Resizer Handle (Hidden on mobile) */}
             <div
-                className="w-1 bg-border hover:bg-primary/50 cursor-col-resize flex items-center justify-center relative transition-colors group z-10"
-                style={{ display: showLeftPanel ? 'flex' : 'none' }}
+                className={cn(
+                    "hidden w-1 bg-border hover:bg-primary/50 cursor-col-resize items-center justify-center relative transition-colors group z-10",
+                    showLeftPanel && "md:flex"
+                )}
                 onMouseDown={handleMouseDownLeft}
             >
                 <div className="absolute inset-y-0 -left-2 -right-2 z-10 cursor-col-resize" />
@@ -121,15 +142,15 @@ export function ResizableThreeColumnLayout({
 
             {/* Middle Panel */}
             <div
-                style={{ width: `${showLeftPanel ? middleWidth : middleWidth + leftWidth}%` }}
-                className="h-full overflow-auto"
+                style={{ width: isMobile ? '100%' : `${showLeftPanel ? middleWidth : middleWidth + leftWidth}%` }}
+                className="w-full md:w-auto h-auto md:h-full flex-1 shrink-0 md:overflow-y-auto md:overflow-x-hidden"
             >
                 {middlePanel}
             </div>
 
-            {/* Right Resizer Handle */}
+            {/* Right Resizer Handle (Hidden on mobile) */}
             <div
-                className="w-1 bg-border hover:bg-primary/50 cursor-col-resize flex items-center justify-center relative transition-colors group z-10"
+                className="hidden md:flex w-1 bg-border hover:bg-primary/50 cursor-col-resize items-center justify-center relative transition-colors group z-10"
                 onMouseDown={handleMouseDownRight}
             >
                 <div className="absolute inset-y-0 -left-2 -right-2 z-10 cursor-col-resize" />
@@ -140,8 +161,8 @@ export function ResizableThreeColumnLayout({
 
             {/* Right Panel */}
             <div
-                style={{ width: `${rightWidth}%` }}
-                className="h-full flex flex-col min-h-0 overflow-hidden"
+                style={{ width: isMobile ? '100%' : `${rightWidth}%` }}
+                className="w-full md:w-auto h-[60vh] max-h-[600px] md:h-full md:max-h-none flex flex-col min-h-0 md:overflow-hidden border-t md:border-t-0 shrink-0"
             >
                 {rightPanel}
             </div>

@@ -147,9 +147,10 @@ export default function TemplatesPage() {
       </div>
 
       {/* Category Tabs + Count */}
-      <div className="sticky top-0 mt-6 z-10 bg-background/95 backdrop-blur">
-        <div className="relative mx-auto mx-16 py-3 flex items-center justify-center gap-4">
-          <div className="flex items-center gap-1.5 flex-wrap">
+      <div className="sticky top-0 mt-6 z-10 bg-background/95 backdrop-blur border-b border-border/40">
+        <div className="relative mx-auto px-4 sm:px-16 py-3">
+          <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+            <div className="flex min-w-max items-center justify-center gap-1.5 sm:min-w-0 sm:flex-wrap">
             {categories.map((cat) => (
               <button
                 key={cat.id}
@@ -164,8 +165,16 @@ export default function TemplatesPage() {
                 {cat.label}
               </button>
             ))}
+            </div>
           </div>
-          <span className="absolute right-16 text-[13px] font-medium text-primary bg-primary/10 border border-primary/20 px-3 py-1 rounded-full whitespace-nowrap shrink-0">
+          <div className="mt-3 flex justify-center sm:hidden">
+            <span className="text-[13px] font-medium text-primary bg-primary/10 border border-primary/20 px-3 py-1 rounded-full whitespace-nowrap shrink-0">
+              {filteredTemplates.length === 1
+                ? t("templates.countOne", { count: filteredTemplates.length })
+                : t("templates.countOther", { count: filteredTemplates.length })}
+            </span>
+          </div>
+          <span className="hidden sm:inline-flex absolute right-16 top-1/2 -translate-y-1/2 text-[13px] font-medium text-primary bg-primary/10 border border-primary/20 px-3 py-1 rounded-full whitespace-nowrap shrink-0">
             {filteredTemplates.length === 1
               ? t("templates.countOne", { count: filteredTemplates.length })
               : t("templates.countOther", { count: filteredTemplates.length })}
@@ -221,9 +230,15 @@ export default function TemplatesPage() {
                             </div>
                             <button
                               onClick={(e) => handleLikeTemplate(template.id, e)}
-                              className="flex items-center gap-1 hover:text-pink-500 transition-colors"
+                              className={`flex items-center gap-1 transition-colors ${
+                                template.is_liked ? "text-pink-500" : "hover:text-pink-500"
+                              }`}
                             >
-                              <Heart className="w-3 h-3 fill-current text-rose-400/70" />
+                              <Heart
+                                className={`w-3 h-3 fill-current ${
+                                  template.is_liked ? "text-rose-500" : "text-rose-400/70"
+                                }`}
+                              />
                               <span className="font-semibold text-foreground/70">{template.likes ?? 0}</span>
                             </button>
                           </div>
@@ -295,9 +310,15 @@ export default function TemplatesPage() {
                             </div>
                             <button
                               onClick={(e) => handleLikeTemplate(template.id, e)}
-                              className="flex items-center gap-1 hover:text-pink-500 transition-colors"
+                              className={`flex items-center gap-1 transition-colors ${
+                                template.is_liked ? "text-pink-500" : "hover:text-pink-500"
+                              }`}
                             >
-                              <Heart className="w-3 h-3 fill-current text-rose-400/70" />
+                              <Heart
+                                className={`w-3 h-3 fill-current ${
+                                  template.is_liked ? "text-rose-500" : "text-rose-400/70"
+                                }`}
+                              />
                               <span className="font-semibold">{template.likes ?? 0}</span>
                             </button>
                           </div>

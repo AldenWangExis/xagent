@@ -23,7 +23,7 @@ interface Message {
 interface Task {
   id: string
   title: string
-  status: "pending" | "running" | "completed" | "failed" | "paused"
+  status: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_for_user"
   description: string
   createdAt: string | number
   updatedAt: string | number
@@ -136,7 +136,8 @@ export function AgentInput({
       running: "default",
       completed: "default",
       failed: "destructive",
-      paused: "secondary"
+      paused: "secondary",
+      waiting_for_user: "secondary"
     } as const
 
     const labels = {
@@ -144,7 +145,8 @@ export function AgentInput({
       running: t('agent.input.status.labels.running'),
       completed: t('agent.input.status.labels.completed'),
       failed: t('agent.input.status.labels.failed'),
-      paused: t('agent.input.status.labels.paused')
+      paused: t('agent.input.status.labels.paused'),
+      waiting_for_user: t('agent.input.status.labels.waitingForUser')
     }
 
     const customStyles = {
@@ -152,7 +154,8 @@ export function AgentInput({
       running: "bg-primary/10 text-primary border-primary/20",
       completed: "bg-green-500/10 text-green-500 border-green-500/20",
       failed: "bg-destructive/10 text-destructive border-destructive/20",
-      paused: "bg-secondary text-secondary-foreground border-border"
+      paused: "bg-secondary text-secondary-foreground border-border",
+      waiting_for_user: "bg-secondary text-secondary-foreground border-border"
     }
 
     return (
@@ -230,8 +233,8 @@ export function AgentInput({
     }
   }
 
-  // Allow input in paused state, used for adjusting execution plan
-  const isPaused = currentTask?.status === 'paused'
+  // Allow input in paused/waiting state, used for adjusting execution plan or answering the agent.
+  const isPaused = currentTask?.status === 'paused' || currentTask?.status === 'waiting_for_user'
   const isSendDisabled = (!value.trim() && files.length === 0) || disabled || (!isPaused && isProcessing)
 
   // Dynamic placeholder

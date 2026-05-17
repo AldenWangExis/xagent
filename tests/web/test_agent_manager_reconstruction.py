@@ -119,7 +119,6 @@ class TestAgentServiceManagerReconstruction:
             patch("xagent.web.api.chat.AgentService") as mock_agent_service_class,
             patch("xagent.web.api.chat.resolve_llms_from_names") as mock_resolve_llms,
             patch("xagent.web.api.chat.get_memory_store") as mock_get_memory,
-            patch("xagent.web.api.chat.Tracer"),
             patch(
                 "xagent.core.tools.adapters.vibe.factory.ToolFactory"
             ) as mock_tool_factory,
@@ -175,7 +174,6 @@ class TestAgentServiceManagerReconstruction:
             patch("xagent.web.api.chat.AgentService") as mock_agent_service_class,
             patch("xagent.web.api.chat.resolve_llms_from_names") as mock_resolve_llms,
             patch("xagent.web.api.chat.get_memory_store") as mock_get_memory,
-            patch("xagent.web.api.chat.Tracer"),
             patch(
                 "xagent.core.tools.adapters.vibe.factory.ToolFactory"
             ) as mock_tool_factory,
@@ -204,6 +202,57 @@ class TestAgentServiceManagerReconstruction:
         assert agent_manager._agents[1] == mock_agent_service
 
     @pytest.mark.asyncio
+    async def test_admin_task_uses_task_owner_workspace_dirs(
+        self, agent_manager, mock_db, tmp_path
+    ):
+        """Admin executing another user's task should use the task owner's workspace."""
+        owner_task = Task(
+            id=1,
+            user_id=7,
+            title="Owner Task",
+            description="Task owned by another user",
+            status=TaskStatus.PENDING,
+            agent_type="standard",
+        )
+        admin_user = User(
+            id=1,
+            username="admin",
+            password_hash="hashed_password",
+            is_admin=True,
+        )
+        uploads_dir = tmp_path / "uploads"
+
+        with (
+            patch("xagent.web.api.chat.AgentService") as mock_agent_service_class,
+            patch("xagent.web.api.chat.resolve_llms_from_names") as mock_resolve_llms,
+            patch("xagent.web.api.chat.get_memory_store") as mock_get_memory,
+            patch("xagent.web.api.chat.get_uploads_dir", return_value=uploads_dir),
+            patch(
+                "xagent.core.tools.adapters.vibe.factory.ToolFactory"
+            ) as mock_tool_factory,
+        ):
+            mock_resolve_llms.return_value = (MagicMock(), None, None, None)
+            mock_get_memory.return_value = MagicMock()
+            mock_tool_factory.create_all_tools = AsyncMock(return_value=[])
+            mock_agent_service = MagicMock()
+            mock_agent_service_class.return_value = mock_agent_service
+
+            mock_task_query = MagicMock()
+            mock_task_query.filter.return_value = mock_task_query
+            mock_task_query.first.return_value = owner_task
+            mock_db.query.return_value = mock_task_query
+
+            await agent_manager.get_agent_for_task(1, mock_db, user=admin_user)
+
+        kwargs = mock_agent_service_class.call_args.kwargs
+        assert kwargs["workspace_base_dir"] == str(uploads_dir / "user_7")
+        assert str(uploads_dir / "user_7") in kwargs["allowed_external_dirs"]
+        tool_config = kwargs["tool_config"]
+        workspace_config = tool_config.get_workspace_config()
+        assert workspace_config["base_dir"] == str(uploads_dir / "user_7")
+        assert str(uploads_dir / "user_7") in workspace_config["allowed_external_dirs"]
+
+    @pytest.mark.asyncio
     async def test_get_agent_for_task_existing_task_with_reconstruction(
         self,
         agent_manager,
@@ -220,7 +269,6 @@ class TestAgentServiceManagerReconstruction:
             patch("xagent.web.api.chat.AgentService") as mock_agent_service_class,
             patch("xagent.web.api.chat.resolve_llms_from_names") as mock_resolve_llms,
             patch("xagent.web.api.chat.get_memory_store") as mock_get_memory,
-            patch("xagent.web.api.chat.Tracer"),
             patch(
                 "xagent.core.tools.adapters.vibe.factory.ToolFactory"
             ) as mock_tool_factory,
@@ -274,10 +322,22 @@ class TestAgentServiceManagerReconstruction:
 
     @pytest.mark.asyncio
     async def test_reconstruct_agent_from_history_success(
-        self, agent_manager, mock_db, sample_trace_events, sample_dag_execution
+        self,
+        agent_manager,
+        mock_db,
+        mock_user,
+        sample_task,
+        sample_trace_events,
+        sample_dag_execution,
     ):
         """测试从历史数据重建agent成功"""
         # Mock查询
+        mock_task_query = MagicMock()
+        mock_task_query.first.return_value = sample_task
+        mock_task_query.filter.return_value = mock_task_query
+        mock_user_query = MagicMock()
+        mock_user_query.first.return_value = mock_user
+        mock_user_query.filter.return_value = mock_user_query
         mock_trace_query = MagicMock()
         mock_trace_query.all.return_value = sample_trace_events
         mock_trace_query.filter.return_value = mock_trace_query
@@ -288,7 +348,11 @@ class TestAgentServiceManagerReconstruction:
         def mock_query_side_effect(model):
             from xagent.web.models.task import DAGExecution, TraceEvent
 
-            if model == TraceEvent:
+            if model == Task:
+                return mock_task_query
+            elif model == User:
+                return mock_user_query
+            elif model == TraceEvent:
                 return mock_trace_query
             elif model == DAGExecution:
                 return mock_dag_query
@@ -300,16 +364,20 @@ class TestAgentServiceManagerReconstruction:
         # Mock AgentService创建和reconstruct_from_history
         with (
             patch(
-                "xagent.core.tools.adapters.vibe.factory.ToolFactory"
-            ) as mock_tool_factory,
+                "xagent.web.api.chat.resolve_llms_from_names",
+                return_value=(None, None, None, None),
+            ),
+            patch(
+                "xagent.web.api.chat.create_default_tools",
+                new=AsyncMock(return_value=(["tool"], "tool_config")),
+            ),
+            patch("xagent.web.sandbox_manager.get_sandbox_manager", return_value=None),
             patch("xagent.web.api.chat.AgentService") as mock_agent_service_class,
         ):
             # 设置mock AgentService实例
             mock_agent_instance = MagicMock()
             mock_agent_instance.reconstruct_from_history = AsyncMock()
             mock_agent_service_class.return_value = mock_agent_instance
-
-            mock_tool_factory.create_all_tools = AsyncMock(return_value=[])
 
             # 调用方法
             await agent_manager._reconstruct_agent_from_history(1, mock_db)
@@ -318,6 +386,9 @@ class TestAgentServiceManagerReconstruction:
         assert 1 in agent_manager._agents
         # 验证reconstruct_from_history被调用
         mock_agent_instance.reconstruct_from_history.assert_called_once()
+        _, agent_kwargs = mock_agent_service_class.call_args
+        assert agent_kwargs["tools"] == ["tool"]
+        assert agent_kwargs["tool_config"] == "tool_config"
 
     @pytest.mark.asyncio
     async def test_reconstruct_agent_from_history_no_data(self, agent_manager, mock_db):

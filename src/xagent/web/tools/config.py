@@ -8,6 +8,7 @@ and other web-specific sources.
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -164,7 +165,6 @@ class WebToolConfig(BaseToolConfig):
         self._allowed_collections = allowed_collections
         self._allowed_skills = allowed_skills
         self._allowed_tools = allowed_tools
-        self._delegate_agent_ids: Optional[List[int]] = None
         self._excluded_agent_id: Optional[int] = None
 
         # Cache user object for hook queries.
@@ -186,6 +186,25 @@ class WebToolConfig(BaseToolConfig):
         self._cached_tts_model: Optional[Any] = None
         self._cached_mcp_configs: Optional[List[Dict[str, Any]]] = None
         self._cached_embedding_model: Optional[str] = None
+
+    def _build_mcp_file_allowed_dirs(self) -> str:
+        """Build comma-separated file roots that local MCP tools may read."""
+        dirs: list[str] = []
+        base_dir = Path(str(self._workspace_config.get("base_dir", get_uploads_dir())))
+        task_id = self._workspace_config.get("task_id")
+        if task_id:
+            dirs.append(str((base_dir / str(task_id)).expanduser().resolve()))
+
+        for raw_dir in self._workspace_config.get("allowed_external_dirs") or []:
+            dirs.append(str(Path(str(raw_dir)).expanduser().resolve()))
+
+        seen: set[str] = set()
+        unique_dirs = []
+        for dir_path in dirs:
+            if dir_path not in seen:
+                unique_dirs.append(dir_path)
+                seen.add(dir_path)
+        return ",".join(unique_dirs)
 
     def _get_user_id_from_request(self, request: Any) -> int:
         """Extract user ID from request using JWT authentication."""
@@ -328,10 +347,6 @@ class WebToolConfig(BaseToolConfig):
     def get_excluded_agent_id(self) -> Optional[int]:
         """Get agent ID to exclude from agent tools (to prevent self-calls)."""
         return getattr(self, "_excluded_agent_id", None)
-
-    def get_delegate_agent_ids(self) -> Optional[List[int]]:
-        """Get explicitly selected delegable agent IDs."""
-        return getattr(self, "_delegate_agent_ids", None)
 
     def get_user_id(self) -> Optional[int]:
         """Get current user ID for multi-tenancy."""
@@ -622,6 +637,11 @@ class WebToolConfig(BaseToolConfig):
                                         "http_proxy": os.environ.get("http_proxy", ""),
                                     }
                                 )
+                                allowed_file_dirs = self._build_mcp_file_allowed_dirs()
+                                if allowed_file_dirs:
+                                    env["XAGENT_LINKEDIN_IMAGE_ALLOWED_DIRS"] = (
+                                        allowed_file_dirs
+                                    )
                                 transport_config["env"] = env  # type: ignore
                             else:
                                 config["transport"] = "stdio"
@@ -655,10 +675,20 @@ class WebToolConfig(BaseToolConfig):
                         transport_config["cwd"] = server.cwd
 
                 elif server.transport in ["sse", "websocket", "streamable_http"]:
+                    decrypted_auth = server._decrypt_auth_config(
+                        getattr(server, "auth", None)
+                    )
                     if server.url:
                         transport_config["url"] = server.url
-                    if server.headers:
-                        transport_config["headers"] = server.headers
+                    raw_headers = getattr(server, "headers", None)
+                    typed_headers = (
+                        raw_headers if isinstance(raw_headers, dict) else None
+                    )
+                    merged_headers = server._merge_auth_headers(
+                        typed_headers, decrypted_auth
+                    )
+                    if merged_headers:
+                        transport_config["headers"] = merged_headers
 
                 # Add Docker-specific config if managed internally
                 if server.managed == "internal":

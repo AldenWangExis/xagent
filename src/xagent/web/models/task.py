@@ -24,6 +24,7 @@ class TaskStatus(enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
     PAUSED = "paused"
+    WAITING_FOR_USER = "waiting_for_user"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -54,16 +55,13 @@ class ExecutionMode(enum.Enum):
     FLASH = "flash"  # Simple, quick tasks (single_call pattern)
     BALANCED = "balanced"  # Most everyday tasks (react pattern)
     THINK = "think"  # Complex, multi-step tasks (dag_plan_execute pattern)
+    AUTO = "auto"  # Let agent choose final answer, ReAct, or DAG
 
 
 class AgentType(enum.Enum):
     """Agent type enumeration"""
 
     STANDARD = "standard"  # Standard purpose agent
-    TEXT2SQL = "text2sql"  # Text2SQL agent
-    # Future agent types can be added here
-    # CODE_ASSISTANT = "code_assistant"
-    # DATA_ANALYSIS = "data_analysis"
 
 
 class Task(Base):  # type: ignore
@@ -80,6 +78,10 @@ class Task(Base):  # type: ignore
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    runner_id = Column(String(255), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    last_checkpoint_event_id = Column(String(255), nullable=True)
 
     # Model configuration
     model_name = Column(String(255), nullable=True)  # Main model used for the task
@@ -101,7 +103,6 @@ class Task(Base):  # type: ignore
     agent_id = Column(
         Integer, ForeignKey("agents.id"), nullable=True
     )  # Agent Builder agent ID
-    delegate_agent_ids = Column(JSON, nullable=True)  # Delegable agent IDs
     agent_type = Column(
         String(20), default=AgentType.STANDARD.value, nullable=True
     )  # SQLite compatible
@@ -110,7 +111,7 @@ class Task(Base):  # type: ignore
     # Execution mode configuration
     execution_mode = Column(
         String(20), default=ExecutionMode.BALANCED.value, nullable=True
-    )  # "flash" | "balanced" | "think"
+    )  # "flash" | "balanced" | "think" | "auto"
     process_description = Column(
         Text, nullable=True
     )  # Process mode: detailed process description

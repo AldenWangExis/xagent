@@ -20,10 +20,13 @@ from xagent.config import (
     STORAGE_ROOT,
     UPLOADS_DIR,
     WEB_DIR,
+    WEB_SEARCH_PROVIDER,
     format_file_size,
+    get_agent_pattern_for_execution_mode,
     get_boxlite_home_dir,
     get_database_url,
     get_default_sqlite_db_path,
+    get_default_task_execution_mode,
     get_external_skills_dirs,
     get_external_upload_dirs,
     get_lancedb_path,
@@ -36,6 +39,7 @@ from xagent.config import (
     get_storage_root,
     get_uploads_dir,
     get_web_dir,
+    get_web_search_provider,
 )
 
 
@@ -68,6 +72,25 @@ class TestEnvironmentVariableConstants:
 
     def test_max_upload_size_constant(self):
         assert MAX_UPLOAD_SIZE == "XAGENT_MAX_UPLOAD_SIZE"
+
+    def test_web_search_provider_constant(self):
+        assert WEB_SEARCH_PROVIDER == "XAGENT_WEB_SEARCH_PROVIDER"
+
+
+class TestGetWebSearchProvider:
+    """Test get_web_search_provider() function."""
+
+    def test_default_web_search_provider(self, monkeypatch):
+        monkeypatch.delenv(WEB_SEARCH_PROVIDER, raising=False)
+        assert get_web_search_provider() == "auto"
+
+    def test_normalizes_web_search_provider(self, monkeypatch):
+        monkeypatch.setenv(WEB_SEARCH_PROVIDER, " Google ")
+        assert get_web_search_provider() == "google"
+
+    def test_invalid_web_search_provider_falls_back_to_auto(self, monkeypatch):
+        monkeypatch.setenv(WEB_SEARCH_PROVIDER, "bing")
+        assert get_web_search_provider() == "auto"
 
 
 class TestGetMaxUploadSizeBytes:
@@ -155,6 +178,33 @@ class TestGetWebDir:
         monkeypatch.setenv(WEB_DIR, "/custom/web")
         result = get_web_dir()
         assert result == Path("/custom/web")
+
+
+class TestGetAgentPatternForExecutionMode:
+    """Test get_agent_pattern_for_execution_mode() function."""
+
+    def test_known_execution_modes(self):
+        assert get_agent_pattern_for_execution_mode("flash") == "single_call"
+        assert get_agent_pattern_for_execution_mode("balanced") == "react"
+        assert get_agent_pattern_for_execution_mode("think") == "dag_plan_execute"
+        assert get_agent_pattern_for_execution_mode("auto") == "auto"
+
+    def test_normalizes_mode(self):
+        assert get_agent_pattern_for_execution_mode(" AUTO ") == "auto"
+
+    def test_unknown_mode_falls_back_to_react(self):
+        assert get_agent_pattern_for_execution_mode("unknown") == "react"
+        assert get_agent_pattern_for_execution_mode(None) == "react"
+
+
+class TestGetDefaultTaskExecutionMode:
+    """Test default task execution mode selection."""
+
+    def test_standalone_defaults_to_auto(self):
+        assert get_default_task_execution_mode() == "auto"
+
+    def test_agent_tasks_default_to_balanced(self):
+        assert get_default_task_execution_mode(agent_id=123) == "balanced"
 
 
 class TestGetExternalUploadDirs:

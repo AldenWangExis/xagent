@@ -3,7 +3,7 @@ import { createFileChipHTML } from "./FileChip";
 import { useRouter } from "next/navigation";
 import { Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2, ArrowUp, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { cn, getApiUrl } from "@/lib/utils";
+import { cn, getApiUrl, getUploadApiUrl } from "@/lib/utils";
 import { useI18n } from "@/contexts/i18n-context";
 import { useApp } from "@/contexts/app-context-chat";
 import { ConfigDialog } from "@/components/config-dialog";
@@ -32,7 +32,7 @@ interface ChatInputProps {
   onModeChange?: (mode: "task" | "process") => void;
   inputValue?: string;
   onInputChange?: (value: string) => void;
-  taskStatus?: "pending" | "running" | "completed" | "failed" | "paused";
+  taskStatus?: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_for_user";
   onPause?: () => void;
   onResume?: () => void;
   taskConfig?: {
@@ -91,20 +91,18 @@ export function ChatInput({
   const { openFilePreview } = useApp();
 
   useEffect(() => {
-    if (autoFocus && editorRef.current) {
-      // Focus at the end of text if any, or just focus
-      editorRef.current.focus();
-
-      // Try to place cursor at the end
-      if (typeof window !== 'undefined') {
-        const selection = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(editorRef.current);
-        range.collapse(false); // false means collapse to end
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-      }
-    }
+    if (!autoFocus || !editorRef.current) return;
+    const el = editorRef.current;
+    const frameId = window.requestAnimationFrame(() => {
+      el.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    return () => window.cancelAnimationFrame(frameId);
   }, [autoFocus]);
 
   const escapeHtml = (value: string) =>
@@ -241,6 +239,12 @@ export function ChatInput({
     memorySimilarityThreshold?: number;
     executionMode?: "flash" | "balanced" | "think";
   }>({ model: "", memorySimilarityThreshold: 1.5 });
+  const [defaultAgentConfig, setDefaultAgentConfig] = useState<{
+    model: string;
+    smallFastModel?: string;
+    visualModel?: string;
+    compactModel?: string;
+  }>({ model: "" });
   const [models, setModels] = useState<any[]>([]);
 
   // State to track files currently being uploaded
@@ -273,7 +277,7 @@ export function ChatInput({
         // Default to task mode if not specified
         formData.append('task_type', mode || 'task');
 
-        const response = await apiRequest(`${getApiUrl()}/api/files/upload`, {
+        const response = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
           method: 'POST',
           body: formData,
           signal: controller.signal
@@ -367,12 +371,21 @@ export function ChatInput({
           }
         }
 
+        const newDefaultConfig = {
+          model: defaultModels.general?.model_id || "",
+          smallFastModel: defaultModels.small_fast?.model_id,
+          visualModel: defaultModels.visual?.model_id,
+          compactModel: defaultModels.compact?.model_id
+        };
+
+        setDefaultAgentConfig(newDefaultConfig);
+
         setAgentConfig(prev => ({
           ...prev,
-          model: prev.model || defaultModels.general?.model_id || "",
-          smallFastModel: prev.smallFastModel || defaultModels.small_fast?.model_id,
-          visualModel: prev.visualModel || defaultModels.visual?.model_id,
-          compactModel: prev.compactModel || defaultModels.compact?.model_id
+          model: prev.model || newDefaultConfig.model,
+          smallFastModel: prev.smallFastModel || newDefaultConfig.smallFastModel,
+          visualModel: prev.visualModel || newDefaultConfig.visualModel,
+          compactModel: prev.compactModel || newDefaultConfig.compactModel
         }));
       } catch (error) {
         console.error('Failed to fetch default models:', error);
@@ -393,8 +406,17 @@ export function ChatInput({
         compactModel: taskConfig.compactModel || prev.compactModel,
         executionMode: taskConfig.executionMode
       }));
+    } else if (!readOnlyConfig) {
+      setAgentConfig(prev => ({
+        ...prev,
+        model: defaultAgentConfig.model,
+        smallFastModel: defaultAgentConfig.smallFastModel,
+        visualModel: defaultAgentConfig.visualModel,
+        compactModel: defaultAgentConfig.compactModel,
+        executionMode: undefined
+      }));
     }
-  }, [taskConfig]);
+  }, [taskConfig, readOnlyConfig, defaultAgentConfig]);
 
   const handleConfigChange = (config: {
     model: string;
@@ -407,12 +429,20 @@ export function ChatInput({
     setAgentConfig(config);
   };
 
+  const allowsInterruptedInput = taskStatus === 'paused' || taskStatus === 'waiting_for_user';
+  const isInputBusy = !!isLoading && !allowsInterruptedInput;
+
   const canSubmit = () => {
     const hasText = message.trim().length > 0;
     const hasFiles = files.length > 0;
     const isUploadingFiles = uploadingFiles.size > 0;
-    return (hasText || hasFiles) && !isLoading && !isUploadingFiles;
+    return (hasText || hasFiles) && !isInputBusy && !isUploadingFiles;
   };
+  const canPauseTask =
+    taskStatus === 'running' ||
+    (isLoading &&
+      !!onPause &&
+      !['completed', 'failed', 'paused', 'waiting_for_user'].includes(taskStatus || ''));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -663,7 +693,7 @@ export function ChatInput({
               className={cn(
                 "w-full rounded-md border-0 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground/60 overflow-y-auto resize-none focus-visible:ring-0 focus-visible:ring-offset-0 whitespace-pre-wrap break-words text-left",
                 compact ? "min-h-[44px] px-3 py-3 pr-12 max-h-[150px]" : cn(minHeightClass, "px-4 py-3 pb-16 max-h-[400px]"),
-                isLoading ? "opacity-50 pointer-events-none" : ""
+                isInputBusy ? "opacity-50 pointer-events-none" : ""
               )}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
@@ -692,7 +722,7 @@ export function ChatInput({
                   !canSubmit() && "bg-muted text-muted-foreground/50"
                 )}
               >
-                {isLoading ? (
+                {isInputBusy ? (
                   <Sparkles className="h-4 w-4 animate-pulse" />
                 ) : (
                   <ArrowUp className="h-4 w-4" />
@@ -712,11 +742,11 @@ export function ChatInput({
                         size="sm"
                         className="h-9 px-3 text-muted-foreground rounded-xl gap-2 cursor-default hover:bg-transparent"
                         disabled={true}
-                        title={models.find(m => m.model_id === agentConfig.model)?.model_name || agentConfig.model || t("chatPage.input.noModel")}
+                        title={models.find(m => String(m.id) === String(agentConfig.model) || String(m.model_id) === String(agentConfig.model))?.model_name || agentConfig.model || t("chatPage.input.noModel")}
                       >
                         <Globe className="h-4 w-4" />
                         <span className="text-xs font-normal max-w-[150px] truncate hidden sm:inline-block">
-                          {models.find(m => m.model_id === agentConfig.model)?.model_name || agentConfig.model || t("chatPage.input.noModel")}
+                          {models.find(m => String(m.id) === String(agentConfig.model) || String(m.model_id) === String(agentConfig.model))?.model_name || agentConfig.model || t("chatPage.input.noModel")}
                         </span>
                       </Button>
                     ) : (
@@ -729,12 +759,12 @@ export function ChatInput({
                             variant="ghost"
                             size="sm"
                             className="h-9 px-3 text-muted-foreground hover:text-foreground hover:bg-secondary/80 rounded-xl gap-2"
-                            disabled={isLoading}
+                            disabled={isInputBusy}
                             title={t('agent.input.actions.config')}
                           >
                             <Globe className="h-4 w-4" />
                             <span className="text-xs font-normal max-w-[150px] truncate hidden sm:inline-block">
-                              {models.find(m => m.model_id === agentConfig.model)?.model_name || agentConfig.model || t("chatPage.input.noModel")}
+                              {models.find(m => String(m.id) === String(agentConfig.model) || String(m.model_id) === String(agentConfig.model))?.model_name || agentConfig.model || t("chatPage.input.noModel")}
                             </span>
                           </Button>
                         }
@@ -759,7 +789,7 @@ export function ChatInput({
                       size="sm"
                       className="h-9 w-9 p-0 text-muted-foreground hover:text-foreground hover:bg-secondary/80 rounded-full"
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={isLoading}
+                      disabled={isInputBusy}
                       title={t("chatPage.input.actions.upload")}
                     >
                       <Paperclip className="h-4 w-4" />
@@ -769,7 +799,7 @@ export function ChatInput({
               </div>
 
               <div className="flex items-center gap-3">
-                {taskStatus === 'running' ? (
+                {canPauseTask ? (
                   <Button
                     type="button"
                     size="icon"
@@ -777,15 +807,6 @@ export function ChatInput({
                     className="h-8 w-8 rounded-full transition-all duration-300 bg-yellow-500 hover:bg-yellow-600 text-white"
                   >
                     <Pause className="h-4 w-4" />
-                  </Button>
-                ) : taskStatus === 'paused' ? (
-                  <Button
-                    type="button"
-                    size="icon"
-                    onClick={onResume}
-                    className="h-8 w-8 rounded-full transition-all duration-300 bg-green-500 hover:bg-green-600 text-white"
-                  >
-                    <Play className="h-4 w-4" />
                   </Button>
                 ) : (
                   <div className="flex items-center gap-2">
@@ -801,12 +822,23 @@ export function ChatInput({
                         !canSubmit() && "bg-muted text-muted-foreground/50"
                       )}
                     >
-                      {isLoading ? (
+                      {isInputBusy ? (
                         <Sparkles className="h-4 w-4 animate-pulse" />
                       ) : (
                         <ArrowUp className="h-4 w-4" />
                       )}
                     </Button>
+                    {taskStatus === 'paused' && onResume && (
+                      <Button
+                        type="button"
+                        size="icon"
+                        onClick={onResume}
+                        className="h-8 w-8 rounded-full transition-all duration-300 bg-green-500 hover:bg-green-600 text-white"
+                        title={t('agent.input.actions.resumeTask')}
+                      >
+                        <Play className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>

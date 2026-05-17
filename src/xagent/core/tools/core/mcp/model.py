@@ -6,6 +6,13 @@ from typing import Any, Dict, Type
 from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy.sql import func
 
+SENSITIVE_AUTH_FIELDS = (
+    "bearer_token",
+    "api_key_value",
+    "client_secret",
+    "access_token",
+)
+
 
 def create_mcp_server_table(Base: Type[Any]) -> Type[Any]:
     """
@@ -65,6 +72,60 @@ def create_mcp_server_table(Base: Type[Any]) -> Type[Any]:
         def __repr__(self) -> str:
             return f"<MCPServer(id={self.id}, name='{self.name}', transport='{self.transport}', managed='{self.managed}')>"
 
+        @staticmethod
+        def _decrypt_auth_config(auth_value: Any) -> Any:
+            """Decrypt sensitive auth fields while preserving non-dict values."""
+            if not isinstance(auth_value, dict):
+                return auth_value
+
+            from xagent.core.utils.encryption import decrypt_value
+
+            decrypted_auth = auth_value.copy()
+            for key in SENSITIVE_AUTH_FIELDS:
+                if key in decrypted_auth and decrypted_auth[key]:
+                    decrypted_auth[key] = decrypt_value(decrypted_auth[key])
+            return decrypted_auth
+
+        @staticmethod
+        def _merge_auth_headers(
+            headers: Dict[str, Any] | None, auth_value: Any
+        ) -> Dict[str, Any] | None:
+            """Translate supported auth config into HTTP headers.
+
+            Explicit custom headers always win over auto-generated auth headers.
+            """
+            merged_headers = dict(headers or {})
+            if not isinstance(auth_value, dict):
+                return merged_headers or None
+
+            existing_headers = {
+                str(header_name).lower() for header_name in merged_headers
+            }
+            auth_type = auth_value.get("type")
+
+            if auth_type == "bearer":
+                bearer_token = auth_value.get("bearer_token")
+                if bearer_token and "authorization" not in existing_headers:
+                    merged_headers["Authorization"] = f"Bearer {bearer_token}"
+            elif auth_type == "api_key":
+                header_name = auth_value.get("api_key_name")
+                header_value = auth_value.get("api_key_value")
+                if (
+                    header_name
+                    and header_value
+                    and str(header_name).lower() not in existing_headers
+                ):
+                    merged_headers[str(header_name)] = header_value
+            elif auth_type == "oauth2":
+                access_token = auth_value.get("access_token") or auth_value.get(
+                    "bearer_token"
+                )
+                token_type = auth_value.get("token_type") or "Bearer"
+                if access_token and "authorization" not in existing_headers:
+                    merged_headers["Authorization"] = f"{token_type} {access_token}"
+
+            return merged_headers or None
+
         @property
         def transport_display(self) -> str:
             """Get human-readable transport name."""
@@ -81,6 +142,7 @@ def create_mcp_server_table(Base: Type[Any]) -> Type[Any]:
 
         def to_connection_dict(self) -> Dict[str, Any]:
             """Convert to MCP connection format expected by MCP tools."""
+            decrypted_auth = self._decrypt_auth_config(getattr(self, "auth", None))
             connection: Dict[str, Any] = {
                 "name": self.name,
                 "transport": self.transport,
@@ -99,42 +161,23 @@ def create_mcp_server_table(Base: Type[Any]) -> Type[Any]:
             elif self.transport in ["sse", "websocket", "streamable_http"]:
                 if self.url:
                     connection["url"] = self.url
-                if self.headers:
-                    connection["headers"] = self.headers
+                raw_headers = getattr(self, "headers", None)
+                typed_headers = raw_headers if isinstance(raw_headers, dict) else None
+                merged_headers = self._merge_auth_headers(typed_headers, decrypted_auth)
+                if merged_headers:
+                    connection["headers"] = merged_headers
 
             if getattr(self, "timeout", None) is not None:
                 connection["timeout"] = self.timeout
             if getattr(self, "auth", None) is not None:
-                auth_dict = self.auth
-                if isinstance(auth_dict, dict):
-                    # Decrypt sensitive fields
-                    from xagent.core.utils.encryption import decrypt_value
-
-                    decrypted_auth = auth_dict.copy()
-                    if (
-                        "bearer_token" in decrypted_auth
-                        and decrypted_auth["bearer_token"]
-                    ):
-                        decrypted_auth["bearer_token"] = decrypt_value(
-                            decrypted_auth["bearer_token"]
-                        )
-                    if (
-                        "api_key_value" in decrypted_auth
-                        and decrypted_auth["api_key_value"]
-                    ):
-                        decrypted_auth["api_key_value"] = decrypt_value(
-                            decrypted_auth["api_key_value"]
-                        )
-                    if (
-                        "client_secret" in decrypted_auth
-                        and decrypted_auth["client_secret"]
-                    ):
-                        decrypted_auth["client_secret"] = decrypt_value(
-                            decrypted_auth["client_secret"]
-                        )
+                # HTTP transports consume auth via generated headers above; keep non-dict
+                # auth values for compatibility with callers that provide httpx.Auth.
+                if self.transport not in [
+                    "sse",
+                    "websocket",
+                    "streamable_http",
+                ] or not isinstance(decrypted_auth, dict):
                     connection["auth"] = decrypted_auth
-                else:
-                    connection["auth"] = self.auth
 
             return connection
 
@@ -164,36 +207,7 @@ def create_mcp_server_table(Base: Type[Any]) -> Type[Any]:
             if getattr(self, "timeout", None) is not None:
                 config["timeout"] = self.timeout
             if getattr(self, "auth", None) is not None:
-                auth_dict = self.auth
-                if isinstance(auth_dict, dict):
-                    # Decrypt sensitive fields
-                    from xagent.core.utils.encryption import decrypt_value
-
-                    decrypted_auth = auth_dict.copy()
-                    if (
-                        "bearer_token" in decrypted_auth
-                        and decrypted_auth["bearer_token"]
-                    ):
-                        decrypted_auth["bearer_token"] = decrypt_value(
-                            decrypted_auth["bearer_token"]
-                        )
-                    if (
-                        "api_key_value" in decrypted_auth
-                        and decrypted_auth["api_key_value"]
-                    ):
-                        decrypted_auth["api_key_value"] = decrypt_value(
-                            decrypted_auth["api_key_value"]
-                        )
-                    if (
-                        "client_secret" in decrypted_auth
-                        and decrypted_auth["client_secret"]
-                    ):
-                        decrypted_auth["client_secret"] = decrypt_value(
-                            decrypted_auth["client_secret"]
-                        )
-                    config["auth"] = decrypted_auth
-                else:
-                    config["auth"] = self.auth
+                config["auth"] = self._decrypt_auth_config(self.auth)
 
             # Container parameters (internal only)
             if self.managed == "internal":
@@ -227,30 +241,13 @@ def create_mcp_server_table(Base: Type[Any]) -> Type[Any]:
                 encrypted_auth = auth_config.copy()
                 # Check if it's already encrypted (starts with gAAAAAB...) to avoid double encryption
                 # (Fernet tokens always start with gAAAAAB)
-                if (
-                    "bearer_token" in encrypted_auth
-                    and encrypted_auth["bearer_token"]
-                    and not encrypted_auth["bearer_token"].startswith("gAAAAAB")
-                ):
-                    encrypted_auth["bearer_token"] = encrypt_value(
-                        encrypted_auth["bearer_token"]
-                    )
-                if (
-                    "api_key_value" in encrypted_auth
-                    and encrypted_auth["api_key_value"]
-                    and not encrypted_auth["api_key_value"].startswith("gAAAAAB")
-                ):
-                    encrypted_auth["api_key_value"] = encrypt_value(
-                        encrypted_auth["api_key_value"]
-                    )
-                if (
-                    "client_secret" in encrypted_auth
-                    and encrypted_auth["client_secret"]
-                    and not encrypted_auth["client_secret"].startswith("gAAAAAB")
-                ):
-                    encrypted_auth["client_secret"] = encrypt_value(
-                        encrypted_auth["client_secret"]
-                    )
+                for key in SENSITIVE_AUTH_FIELDS:
+                    if (
+                        key in encrypted_auth
+                        and encrypted_auth[key]
+                        and not encrypted_auth[key].startswith("gAAAAAB")
+                    ):
+                        encrypted_auth[key] = encrypt_value(encrypted_auth[key])
                 auth_config = encrypted_auth
 
             return cls(

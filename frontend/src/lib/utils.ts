@@ -11,6 +11,24 @@ export function getApiUrl(): string {
   return apiUrl
 }
 
+export function getUploadApiUrl(): string {
+  // Direct-to-backend URL for file uploads. The Next.js dev-server proxy
+  // (rewrites in next.config.mjs) buffers entire multipart bodies into Node
+  // memory before forwarding; bodies over ~5MB trigger an internal 30s
+  // timeout and the client sees a plain-text "Internal Server Error" 500.
+  // To avoid that, point uploads directly at the FastAPI backend.
+  //
+  // - In dev, set NEXT_PUBLIC_UPLOAD_API_URL=http://localhost:8000 in
+  //   frontend/.env.local. FastAPI's CORS middleware already allows "*".
+  // - In production (nginx + same-origin), leave it unset and uploads will
+  //   reuse NEXT_PUBLIC_API_URL (which is empty by default → same-origin).
+  return (
+    process.env.NEXT_PUBLIC_UPLOAD_API_URL
+    || process.env.NEXT_PUBLIC_API_URL
+    || ''
+  )
+}
+
 export function getAuthHeaders(token: string | null): Record<string, string> {
   if (!token) return {}
   return {

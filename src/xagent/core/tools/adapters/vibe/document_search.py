@@ -117,7 +117,11 @@ class KnowledgeSearchTool(AbstractBaseTool):
         Use this tool when you need to find information from uploaded documents,
         knowledge bases, or document collections. Supports semantic search,
         keyword search, and hybrid search. Returns relevant document chunks
-        with relevance scores. Can search all collections or specific ones by name."""
+        with relevance scores. Can search all collections or specific ones by name.
+        Treat one call as a top-k evidence set: inspect all returned results before
+        deciding whether another search is needed. Search again only when the
+        returned results as a group do not contain enough information to answer
+        the current question."""
 
     @property
     def tags(self) -> list[str]:

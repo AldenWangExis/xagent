@@ -1,5 +1,6 @@
 """Generic tracing module for tracking events in the xagent system."""
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -8,6 +9,33 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+DISPLAY_USER_MESSAGE_KEY = "display_user_message"
+
+
+def get_display_user_message(context: Any, fallback: str) -> str:
+    """Return the user-visible message for trace/UI events."""
+    candidates: list[dict[str, Any]] = []
+    if isinstance(context, dict):
+        candidates.append(context)
+
+    state = getattr(context, "state", None)
+    if isinstance(state, dict):
+        candidates.append(state)
+
+    metadata = getattr(context, "metadata", None)
+    if isinstance(metadata, dict):
+        request_context = metadata.get("request_context")
+        if isinstance(request_context, dict):
+            candidates.append(request_context)
+        candidates.append(metadata)
+
+    for candidate in candidates:
+        display_message = candidate.get(DISPLAY_USER_MESSAGE_KEY)
+        if isinstance(display_message, str) and display_message.strip():
+            return display_message
+
+    return fallback
 
 
 class TraceScope(Enum):
@@ -157,6 +185,7 @@ class TraceEvent:
         timestamp: Optional[float] = None,
         data: Optional[Dict[str, Any]] = None,
         parent_id: Optional[str] = None,
+        require_persisted: bool = False,
     ):
         self.id = str(uuid4())
         self.event_type = event_type
@@ -165,6 +194,7 @@ class TraceEvent:
         self.timestamp = timestamp or datetime.now(timezone.utc).timestamp()
         self.data = data or {}
         self.parent_id = parent_id
+        self.require_persisted = require_persisted
 
         # Validate scope requirements
         self._validate_scope()
@@ -197,6 +227,7 @@ class TraceEvent:
             "step_id": self.step_id,
             "data": self.data,
             "parent_id": self.parent_id,
+            "require_persisted": self.require_persisted,
         }
 
 
@@ -230,6 +261,8 @@ class BaseTraceHandler(TraceHandler):
                 logger.warning(f"No handler for event scope: {event.event_type.scope}")
         except Exception as e:
             logger.error(f"Error handling event {event.event_type.value}: {e}")
+            if event.require_persisted:
+                raise
             # Don't re-raise to avoid breaking the main execution
 
     async def _handle_task_event(self, event: TraceEvent) -> None:
@@ -331,6 +364,7 @@ class Tracer:
         step_id: Optional[str] = None,
         data: Optional[Dict[str, Any]] = None,
         parent_id: Optional[str] = None,
+        require_persisted: bool = False,
     ) -> str:
         """Record a trace event and return its ID."""
         logger.info(
@@ -343,24 +377,68 @@ class Tracer:
             step_id=step_id,
             data=data or {},
             parent_id=parent_id,
+            require_persisted=require_persisted,
         )
 
         # Notify all handlers
         logger.info(
             f"Notifying {len(self.handlers)} handlers for event {event_type.value}"
         )
+        handler_errors: List[Exception] = []
         for i, handler in enumerate(self.handlers):
             try:
                 logger.info(f"Calling handler {i}: {type(handler).__name__}")
                 await handler.handle_event(event)
                 logger.info(f"Handler {i} completed successfully")
             except Exception as e:
-                logger.warning(f"Trace handler {i} failed: {e}")
+                if require_persisted:
+                    handler_errors.append(e)
+                else:
+                    logger.warning(f"Trace handler {i} failed: {e}")
+
+        if require_persisted:
+            if handler_errors:
+                raise RuntimeError(
+                    f"{len(handler_errors)} trace handler(s) failed while "
+                    "persisting required trace event."
+                ) from handler_errors[0]
+            if not self.handlers:
+                raise RuntimeError(
+                    "No trace handlers are configured for required trace persistence."
+                )
 
         logger.info(
             f"trace_event completed for {event_type.value}, event_id: {event.id}"
         )
         return event.id
+
+    async def load_latest_checkpoint(
+        self,
+        execution_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Load the latest checkpoint from the first handler that supports it."""
+        for handler in self.handlers:
+            method = getattr(handler, "load_latest_checkpoint", None)
+            if not callable(method):
+                continue
+            payload = method(execution_id)
+            if inspect.isawaitable(payload):
+                payload = await payload
+            if isinstance(payload, dict):
+                return payload
+        return None
+
+    async def get_latest_checkpoint(
+        self,
+        execution_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        return await self.load_latest_checkpoint(execution_id)
+
+    async def latest_checkpoint(
+        self,
+        execution_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        return await self.load_latest_checkpoint(execution_id)
 
 
 # Simplified convenience functions for common tracing operations

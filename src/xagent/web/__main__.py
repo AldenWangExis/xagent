@@ -17,6 +17,7 @@ from typing import cast
 import uvicorn
 from dotenv import load_dotenv
 
+from ..config import get_default_task_execution_mode
 from .logging_config import LogLevel, setup_logging
 
 # Load environment variables from .env file
@@ -136,6 +137,10 @@ def main() -> None:
 
     logger.info("🚀 Starting xagent Web service...")
     logger.info(f"📍 Service URL: http://{args.host}:{args.port}")
+    logger.info(
+        "Agent runtime configured: v2; default standalone task execution_mode=%s",
+        get_default_task_execution_mode(),
+    )
 
     if args.reload:
         logger.info("🔄 Development mode: auto-reload enabled")

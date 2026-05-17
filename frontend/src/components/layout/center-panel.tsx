@@ -70,7 +70,7 @@ interface CenterPanelProps {
   hasError?: boolean
   dagLayout?: 'TB' | 'LR'
   onLayoutChange?: (layout: 'TB' | 'LR') => void
-  currentTaskStatus?: "pending" | "running" | "completed" | "failed" | "paused"
+  currentTaskStatus?: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_for_user"
   onFileClick?: (filePath: string, fileName: string) => void
 }
 
@@ -362,11 +362,13 @@ const nodeTypes: NodeTypes = {
             </div>
           </div>
 
-          {/* Tools / Tags */}
+          {/* Suggested tools / tags */}
           {data.tool_names && data.tool_names.length > 0 && (
             <div className="flex items-center gap-1.5 bg-muted/60 rounded-md px-2 py-1 w-fit border border-border/50">
               <Wrench className="flex-shrink-0 w-3.5 h-3.5 text-muted-foreground" />
-              <span className="text-xs font-medium text-muted-foreground">{data.tool_names.join(', ')}</span>
+              <span className="text-xs font-medium text-muted-foreground">
+                {t("agent.layout.center.labels.suggestedTools")} {data.tool_names.join(', ')}
+              </span>
             </div>
           )}
 
@@ -459,7 +461,7 @@ function CenterPanelInner({
     if (currentTaskStatus === "failed") return "failed"
     if (currentTaskStatus === "running") return "executing"
     if (currentTaskStatus === "pending") return "planning"
-    if (currentTaskStatus === "paused") return "executing" // Treat paused as still executing
+    if (currentTaskStatus === "paused" || currentTaskStatus === "waiting_for_user") return "executing" // Treat paused/waiting as still executing
 
     // Otherwise use dagExecution phase
     return dagExecution?.phase || "planning"
@@ -688,7 +690,7 @@ function CenterPanelInner({
               {selectedNode.data.tool_names && selectedNode.data.tool_names.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("agent.layout.center.labels.tools")}</span>
+                    <span className="text-muted-foreground">{t("agent.layout.center.labels.suggestedTools")}</span>
                     <div className="flex flex-wrap gap-1">
                       {selectedNode.data.tool_names.map((tool, index) => (
                         <span key={index} className="font-mono text-foreground bg-muted px-2 py-1 rounded text-xs">
@@ -702,7 +704,7 @@ function CenterPanelInner({
               )}
               {selectedNode.data.tool_names && selectedNode.data.tool_names.length === 0 && (
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">{t("agent.layout.center.labels.tools")}</span>
+                  <span className="text-muted-foreground">{t("agent.layout.center.labels.suggestedTools")}</span>
                   <span className="font-mono text-foreground bg-muted px-2 py-1 rounded text-xs">
                     <Brain className="h-3 w-3 inline mr-1" />
                     {t("agent.layout.center.labels.pureAnalysis")}

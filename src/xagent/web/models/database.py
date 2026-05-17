@@ -58,10 +58,10 @@ def init_db(db_url: str | None = None) -> None:
         User,
         UserDefaultModel,
         UserModel,
+        UserTemplateRelation,
     )
     from .agent import Agent  # noqa: F401
     from .sandbox import SandboxInfo, SandboxSnapshot  # noqa: F401
-    from .text2sql import Text2SQLDatabase  # noqa: F401
 
     global _SessionLocal
     global _engine

@@ -15,7 +15,6 @@ import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl, getWsUrl } from "@/lib/utils"
 import { PlusCircle, MessageSquare, Upload, Download, Settings2, Check, Zap, BookOpen, ChevronLeft, Gauge, Sparkles, Loader2, X, XCircle, Trash2, Bot, Brain } from "lucide-react"
 import { ConnectMcpDialog } from "@/components/mcp/connect-mcp-dialog"
-import { TemplatePrerequisiteModal } from "./template-prerequisite-modal"
 import { useI18n } from "@/contexts/i18n-context"
 import { useAuth } from "@/contexts/auth-context"
 import { useMcpApps } from "@/contexts/mcp-apps-context"
@@ -102,6 +101,13 @@ interface AgentBuilderProps {
   agentId?: string
 }
 
+interface TemplateRequirements {
+  requiredSkills: string[]
+  requiredToolCategories: string[]
+  requiredMcpServers: string[]
+  requiresKnowledgeBase: boolean
+}
+
 export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const MAX_INSTRUCTIONS_LENGTH = 8192;
   const { t, locale } = useI18n()
@@ -110,7 +116,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const templateId = searchParams.get("template")
-  const initialPrompt = searchParams.get("prompt")
   const [localAgentId, setLocalAgentId] = useState<string | undefined>(agentId)
   const isEditMode = !!localAgentId
   const branding = getBrandingFromEnv();
@@ -139,10 +144,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [originalData, setOriginalData] = useState<any>(null)
   const [isKbModalOpen, setIsKbModalOpen] = useState(false)
   const [isModelConfigOpen, setIsModelConfigOpen] = useState(false)
-  const [showAIAssistant, setShowAIAssistant] = useState(!!initialPrompt)
+  const [showAIAssistant, setShowAIAssistant] = useState(false)
   const [configSynced, setConfigSynced] = useState(false)
   const [notFound, setNotFound] = useState(false)
   const isFirstRender = useRef(true)
+  const modelSectionRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (isFirstRender.current) {
@@ -157,6 +163,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   // Create Success Dialog State
   const [showSuccessDialog, setShowSuccessDialog] = useState(false)
   const [createdAgent, setCreatedAgent] = useState<any>(null)
+  const [templateRequirements, setTemplateRequirements] = useState<TemplateRequirements | null>(null)
 
   // Data State
   const [models, setModels] = useState<Model[]>([])
@@ -167,47 +174,57 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [isConnectMcpOpen, setIsConnectMcpOpen] = useState(false)
   const [isInitialDataLoaded, setIsInitialDataLoaded] = useState(false)
 
-  // Prerequisite Modal State
-  const [showPrerequisiteModal, setShowPrerequisiteModal] = useState(false)
-  const [prerequisiteMcps, setPrerequisiteMcps] = useState<string[]>([])
-  const [prerequisiteNeedsKb, setPrerequisiteNeedsKb] = useState(false)
-  const hasShownPrerequisiteModalRef = useRef(false)
-
   // File picker state for Instructions
   const instructionsRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isInstructionsFocused, setIsInstructionsFocused] = useState(false)
   const lastInstructionsRef = useRef(instructions)
+  const normalizeLineBreaks = (value: string) => value.replace(/\r\n|\r|\u2028|\u2029/g, "\n")
+  const escapeHtml = (value: string) =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+
+  const serializeInstructionsContent = (editor: HTMLElement) => {
+    const clone = editor.cloneNode(true) as HTMLElement;
+    const chips = clone.querySelectorAll('[data-file-path]');
+
+    chips.forEach((chip) => {
+      const path = chip.getAttribute('data-file-path');
+      const fileId = chip.getAttribute('data-file-id');
+      const filename = chip.getAttribute('data-filename') || path?.split('/').pop() || path;
+      const id = fileId || path;
+      chip.replaceWith(document.createTextNode(`[${filename}](file://${id})`));
+    });
+
+    clone.querySelectorAll("br").forEach((lineBreak) => {
+      lineBreak.replaceWith(document.createTextNode("\n"));
+    });
+
+    clone.querySelectorAll("div, p").forEach((block) => {
+      if (block.lastChild?.textContent?.endsWith("\n")) {
+        return;
+      }
+      block.appendChild(document.createTextNode("\n"));
+    });
+
+    return normalizeLineBreaks((clone.textContent || ""))
+      .replace(/\u200B/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/\n$/, "");
+  };
 
   const handleInstructionsInput = () => {
     const editor = instructionsRef.current;
     if (!editor) return;
 
-    // Serialize content: replace chips with markdown link containing file:// scheme
-    const clone = editor.cloneNode(true) as HTMLElement;
-    const chips = clone.querySelectorAll('[data-file-path]');
-    chips.forEach((chip) => {
-      const path = chip.getAttribute('data-file-path');
-      const fileId = chip.getAttribute('data-file-id');
-      const filename = chip.getAttribute('data-filename') || path?.split('/').pop() || path;
-
-      // Use fileId if available, otherwise path (fallback)
-      const id = fileId || path;
-      chip.replaceWith(document.createTextNode(`[${filename}](file://${id})`));
-    });
-
-    // Use innerText to preserve newlines
-    let text = clone.innerText;
-    // Remove zero-width spaces if any (sometimes added by contentEditable)
-    text = text.replace(/\u200B/g, '');
+    let text = serializeInstructionsContent(editor);
 
     if (text.length > MAX_INSTRUCTIONS_LENGTH) {
       text = text.substring(0, MAX_INSTRUCTIONS_LENGTH);
 
-      let html = text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      let html = escapeHtml(text);
 
       html = html.replace(/\[([^\]]+)\]\(file:\/\/([^)]+)\)/g, (match, filename, id) => {
         return createFileChipHTML(id, id, filename);
@@ -239,7 +256,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const handleInstructionsPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const text = e.clipboardData.getData("text/plain");
+    const text = normalizeLineBreaks(e.clipboardData.getData("text/plain"));
 
     const currentLength = lastInstructionsRef.current.length;
     const availableSpace = MAX_INSTRUCTIONS_LENGTH - currentLength;
@@ -253,7 +270,34 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       textToInsert = text.substring(0, availableSpace);
     }
 
-    document.execCommand("insertText", false, textToInsert);
+    const editor = instructionsRef.current;
+    if (editor) {
+      editor.focus();
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        range.deleteContents();
+        const fragment = document.createDocumentFragment();
+        const parts = textToInsert.split("\n");
+        parts.forEach((part, index) => {
+          fragment.appendChild(document.createTextNode(part));
+          if (index < parts.length - 1) {
+            fragment.appendChild(document.createElement("br"));
+          }
+        });
+        const lastNode = fragment.lastChild;
+        range.insertNode(fragment);
+        if (lastNode) {
+          const newRange = document.createRange();
+          newRange.setStartAfter(lastNode);
+          newRange.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(newRange);
+        }
+      } else {
+        editor.innerHTML += escapeHtml(textToInsert).replace(/\n/g, "<br>");
+      }
+    }
     handleInstructionsInput();
   };
 
@@ -292,15 +336,16 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         editor.innerHTML = "";
       } else if (document.activeElement !== editor) {
         // Escape HTML to prevent XSS
-        let html = instructions
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
+        let html = escapeHtml(normalizeLineBreaks(instructions));
 
         // Restore file:// links
         html = html.replace(/\[([^\]]+)\]\(file:\/\/([^)]+)\)/g, (match, filename, id) => {
           return createFileChipHTML(id, id, filename);
         });
+        html = html.replace(/\n/g, "<br>");
+        if (html.endsWith("<br>")) {
+          html += "<br>";
+        }
 
         editor.innerHTML = html;
       }
@@ -321,7 +366,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const [isChatLoading, setIsChatLoading] = useState(false)
   const [taskStatus, setTaskStatus] = useState<"idle" | "running" | "paused">("idle")
-  const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [files, setFiles] = useState<File[]>([])
 
@@ -381,8 +425,10 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 timestamp: Date.now()
               }])
             } else if (message.type === 'task_paused') {
+              setIsChatLoading(false)
               setTaskStatus('paused')
             } else if (message.type === 'task_resumed') {
+              setIsChatLoading(true)
               setTaskStatus('running')
             } else if (message.type === 'trace_event') {
               // Collect trace events and steps
@@ -404,6 +450,17 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 return prev
               })
             } else if (message.type === 'task_completed') {
+              const completionText = typeof message.result === 'string'
+                ? message.result
+                : message.result?.content || ""
+              const interruptedByPause =
+                message.success === false &&
+                completionText === "ReActPattern interrupted."
+
+              if (interruptedByPause) {
+                return
+              }
+
               setIsChatLoading(false)
               setTaskStatus('idle')
               setMessages(prev => {
@@ -412,7 +469,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 if (lastMsg && lastMsg.role === 'assistant') {
                   newMessages[newMessages.length - 1] = {
                     ...lastMsg,
-                    content: message.result || message.output || "Preview completed"
+                    content: completionText || message.output || "Preview completed"
                   }
                   return newMessages
                 }
@@ -662,6 +719,12 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
             });
           }
 
+          setTemplateRequirements({
+            requiredSkills: template.agent_config?.skills || [],
+            requiredToolCategories: allCategories.filter((c: string) => !c.startsWith('mcp:')),
+            requiredMcpServers: connectedMcpApps,
+            requiresKnowledgeBase: allCategories.includes("knowledge"),
+          })
           setSelectedMcpServers(connectedMcpApps)
         }
       } catch (error) {
@@ -674,27 +737,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     loadTemplate()
   }, [templateId, isEditMode, locale, mcpServers])
 
-  // Check prerequisites for template and show modal
   useEffect(() => {
-    if (!templateId || isEditMode || loadingAgent || !isInitialDataLoaded) return
-
-    const unconnected = selectedMcpServers.filter(name => !mcpServers.some(s => s.name.toLowerCase() === name.toLowerCase()))
-    const needsKb = selectedToolCategories.includes("knowledge") && selectedKbs.length === 0
-
-    if (!hasShownPrerequisiteModalRef.current && (unconnected.length > 0 || needsKb)) {
-      setPrerequisiteMcps(unconnected)
-      setPrerequisiteNeedsKb(needsKb)
-      setShowPrerequisiteModal(true)
-      hasShownPrerequisiteModalRef.current = true
-    } else if (hasShownPrerequisiteModalRef.current && showPrerequisiteModal) {
-      // Dynamic updates if modal is still open
-      setPrerequisiteMcps(unconnected)
-      setPrerequisiteNeedsKb(needsKb)
-      if (unconnected.length === 0 && !needsKb) {
-        setShowPrerequisiteModal(false)
-      }
+    if (!templateId || isEditMode) {
+      setTemplateRequirements(null)
     }
-  }, [templateId, isEditMode, loadingAgent, isInitialDataLoaded, selectedMcpServers, mcpServers, selectedToolCategories, selectedKbs, showPrerequisiteModal])
+  }, [templateId, isEditMode])
 
   // Convert kbs to MultiSelect options
   const kbOptions = (Array.isArray(kbs) ? kbs : []).map((kb) => ({
@@ -772,11 +819,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     }
     return labels[category] || category
   }
-
-  // Auto-scroll chat
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages])
 
   const [previewState, setPreviewState] = useState<{
     isOpen: boolean;
@@ -1222,24 +1264,117 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     }
   }
 
+  const isTemplateEntry = Boolean(templateId) && !isEditMode
+  const isTemplateRequirementsPending = isTemplateEntry && (!isInitialDataLoaded || loadingAgent || !templateRequirements)
+  const isTemplateBuildFlow = isTemplateEntry && !isTemplateRequirementsPending
+  const templateMissingKb = Boolean(
+    isTemplateBuildFlow &&
+    templateRequirements?.requiresKnowledgeBase &&
+    selectedKbs.length === 0
+  )
+  const templateMissingSkills = Boolean(
+    isTemplateBuildFlow &&
+    templateRequirements?.requiredSkills.some((skill) => !selectedSkills.includes(skill))
+  )
+  const templateMissingTools = Boolean(
+    isTemplateBuildFlow &&
+    templateRequirements?.requiredToolCategories.some((category) => !selectedToolCategories.includes(category))
+  )
+  const templateMissingMcp = Boolean(
+    isTemplateBuildFlow &&
+    templateRequirements?.requiredMcpServers.some((serverName) => {
+      const isSelected = selectedMcpServers.some((name) => name.toLowerCase() === serverName.toLowerCase())
+      const isConnected = mcpServers.some((server) => server.name.toLowerCase() === serverName.toLowerCase())
+      return !isSelected || !isConnected
+    })
+  )
+  const useTemplateSpecificHighlights =
+    templateMissingKb || templateMissingSkills || templateMissingTools || templateMissingMcp
+  const describeStepCompleted = Boolean(name.trim() && description.trim() && instructions.trim())
+  const configStepCompleted = isTemplateRequirementsPending
+    ? false
+    : isTemplateBuildFlow
+      ? !templateMissingKb && !templateMissingSkills && !templateMissingTools && !templateMissingMcp
+      : (
+        selectedKbs.length > 0 ||
+        selectedSkills.length > 0 ||
+        selectedToolCategories.length > 0 ||
+        selectedMcpServers.length > 0
+      )
+  const previewStepCompleted = messages.some((message) => message.role === "user")
+  const shouldHighlightConfigStep = !configStepCompleted
+  const shouldHighlightKbSection = useTemplateSpecificHighlights ? templateMissingKb : shouldHighlightConfigStep
+  const shouldHighlightSkillsSection = useTemplateSpecificHighlights ? templateMissingSkills : shouldHighlightConfigStep
+  const shouldHighlightToolsSection = useTemplateSpecificHighlights ? templateMissingTools : shouldHighlightConfigStep
+  const shouldHighlightConnectorSection = useTemplateSpecificHighlights ? templateMissingMcp : shouldHighlightConfigStep
+
+  const buildSteps = [
+    {
+      key: "describe",
+      label: t("builds.editor.stepGuide.describe"),
+      status: describeStepCompleted ? "complete" : "current" as "complete" | "current" | "upcoming",
+    },
+    {
+      key: "configure",
+      label: t("builds.editor.stepGuide.configure"),
+      status: configStepCompleted
+        ? "complete"
+        : describeStepCompleted
+          ? "current"
+          : "upcoming" as "complete" | "current" | "upcoming",
+    },
+    {
+      key: "preview",
+      label: t("builds.editor.stepGuide.preview"),
+      status: previewStepCompleted
+        ? "complete"
+        : describeStepCompleted && configStepCompleted
+          ? "current"
+          : "upcoming" as "complete" | "current" | "upcoming",
+    },
+  ]
+  const allStepsCompleted = buildSteps.every((step) => step.status === "complete")
+  const shouldShowCompletedBanner = allStepsCompleted && !localAgentId
+
+  const getStepStatusClasses = (status: "complete" | "current" | "upcoming") =>
+    status === "complete"
+      ? "border-green-500 bg-green-500 text-white"
+      : status === "current"
+        ? "border-primary bg-primary text-primary-foreground shadow-sm"
+        : "border-border bg-background text-muted-foreground"
+
+  const getStepLabelClasses = (status: "complete" | "current" | "upcoming") =>
+    status === "complete"
+      ? "text-green-700 dark:text-green-400"
+      : status === "current"
+        ? "text-foreground"
+        : "text-muted-foreground"
+
+  const getStepConnectorClasses = (status: "complete" | "current" | "upcoming") =>
+    status === "complete" ? "bg-green-500" : status === "current" ? "bg-primary/40" : "bg-border"
+
+  const getConfigSectionClasses = (highlight: boolean) =>
+    cn(
+      "space-y-2 transition-all duration-200",
+      highlight && "rounded-xl border border-primary/30 bg-primary/5 p-4 shadow-sm"
+    )
+
+  const scrollToModelSection = () => {
+    modelSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    })
+  }
+
   const LeftPanel = (
     <div className="p-6 space-y-8 min-h-full bg-card/50">
       {/* Header moved to middle panel */}
-      <div className="flex justify-between items-start">
-        <div>
-          {isEditMode && (
-            <div
-              className="inline-flex items-center gap-1 mb-2 cursor-pointer hover:text-primary"
-              onClick={() => router.push("/build")}
-            >
-              <ChevronLeft className="h-4 w-4" />
-              {t("builds.editor.header.backToList")}
-            </div>
-          )}
-          <h1 className="text-3xl font-bold mb-1">{name || t("builds.editor.header.title")}</h1>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-[240px] flex-1">
+          <h1 className="mb-1 text-3xl font-bold break-words">{name || t("builds.editor.header.title")}</h1>
           <p className="text-muted-foreground">{t("builds.editor.header.subtitle")}</p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex max-w-full flex-wrap items-center gap-2 xl:gap-4">
           <Button
             variant="outline"
             className={cn(
@@ -1288,6 +1423,52 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           )}
         </div>
       </div>
+
+      <div className="rounded-xl border border-primary/15 bg-primary/5 px-4 py-4">
+        <div className="mb-3 text-sm font-semibold text-primary">
+          {t("builds.editor.stepGuide.title")}
+        </div>
+        <div className="overflow-x-auto pb-1">
+          <div className="flex min-w-max items-center gap-3">
+            {buildSteps.map((step, index) => (
+              <React.Fragment key={step.key}>
+                <button
+                  type="button"
+                  className={cn(
+                    "flex items-center gap-3 rounded-md transition-colors",
+                    step.key === "configure" && "cursor-pointer hover:bg-primary/5 px-1 py-1"
+                  )}
+                  onClick={step.key === "configure" ? scrollToModelSection : undefined}
+                >
+                  <div
+                    className={cn(
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                      getStepStatusClasses(step.status)
+                    )}
+                  >
+                    {step.status === "complete" ? <Check className="h-4 w-4" /> : index + 1}
+                  </div>
+                  <span className={cn("text-sm font-medium whitespace-nowrap", getStepLabelClasses(step.status))}>
+                    {step.label}
+                  </span>
+                </button>
+                {index < buildSteps.length - 1 && (
+                  <div className={cn("h-px min-w-10 flex-1", getStepConnectorClasses(step.status))} />
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {shouldShowCompletedBanner && (
+        <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700 dark:border-green-900/40 dark:bg-green-900/20 dark:text-green-400">
+          <div className="flex items-center gap-2">
+            <Check className="h-4 w-4 shrink-0" />
+            <span>{t("builds.editor.stepGuide.completed")}</span>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-6">
         {/* Logo Upload */}
@@ -1382,7 +1563,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               <div
                 ref={instructionsRef}
                 contentEditable={!isOptimizing}
-                className="min-h-[150px] max-h-[300px] w-full rounded-md bg-transparent px-3 py-2 font-mono text-sm outline-none overflow-y-auto break-words whitespace-pre-wrap text-left"
+                className="h-[220px] min-h-[150px] max-h-[520px] w-full rounded-md bg-transparent px-3 py-2 font-mono text-sm outline-none overflow-y-auto resize-y break-words whitespace-pre-wrap text-left"
                 onInput={handleInstructionsInput}
                 onKeyDown={fileMention.handleKeyDown}
                 onPaste={handleInstructionsPaste as any}
@@ -1409,7 +1590,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         {/* Execution Mode */}
         <div className="space-y-2">
           <Label>{t("builds.configForm.executionMode.label")}</Label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
             <button
               type="button"
               className={`px-3 py-2 text-sm border rounded-md transition-colors ${executionMode === "flash"
@@ -1456,7 +1637,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         </div>
 
         {/* Model Selection */}
-        <div className="space-y-4">
+        <div ref={modelSectionRef} className="space-y-4">
           <div className="flex items-center justify-between">
             <Label>{t("builds.configForm.model.label")}</Label>
             <Button
@@ -1465,8 +1646,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               className="h-6 text-xs text-muted-foreground hover:text-foreground"
               onClick={() => setIsModelConfigOpen(true)}
             >
-              <Settings2 className="mr-1.5 h-3.5 w-3.5" />
-              {t("builds.configForm.model.configure")}
+              <Settings2 className="h-3.5 w-3.5 md:mr-1.5" />
+              <span className="hidden md:inline">{t("builds.configForm.model.configure")}</span>
             </Button>
           </div>
 
@@ -1579,7 +1760,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         </div>
 
         {/* Knowledge Base - Multi Select */}
-        <div className="space-y-2">
+        <div className={getConfigSectionClasses(shouldHighlightKbSection)}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <Label>{t("builds.configForm.knowledgeBase.label")}</Label>
@@ -1614,8 +1795,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               className="h-6 text-xs text-muted-foreground hover:text-foreground"
               onClick={() => setIsKbModalOpen(true)}
             >
-              <PlusCircle className="mr-2 h-4 w-4" />
-              {t("builds.configForm.knowledgeBase.create")}
+              <PlusCircle className="h-4 w-4 md:mr-2" />
+              <span className="hidden md:inline">{t("builds.configForm.knowledgeBase.create")}</span>
             </Button>
           </div>
 
@@ -1633,7 +1814,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         </div>
 
         {/* Skills - Multi Select */}
-        <div className="space-y-2">
+        <div className={getConfigSectionClasses(shouldHighlightSkillsSection)}>
           <div className="flex items-center gap-1.5">
             <Label>{t("builds.configForm.skills.label")}</Label>
             <InfoTooltip content={t("builds.configForm.model.tips.skills")} />
@@ -1673,7 +1854,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         </div>
 
         {/* Tools - Multi Select by Category */}
-        <div className="space-y-2">
+        <div className={getConfigSectionClasses(shouldHighlightToolsSection)}>
           <div className="flex items-center gap-1.5">
             <Label>{t("builds.configForm.tools.label")}</Label>
             <InfoTooltip content={t("builds.configForm.model.tips.tools")} />
@@ -1718,6 +1899,12 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               })}
             </div>
           )}
+        </div>
+
+        <div className={getConfigSectionClasses(shouldHighlightConnectorSection)}>
+          <div className="flex items-center gap-1.5">
+            <Label>{t("tools.mcp.dialog.connector")}</Label>
+          </div>
           <div className="flex flex-col gap-2">
             {selectedMcpServers.map((serverName, index) => {
               const isConnected = mcpServers.some((s: any) => s.name === serverName)
@@ -1887,7 +2074,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 taskStatus={index === messages.length - 1 && msg.role === 'assistant' ? taskStatus : undefined}
               />
             ))}
-            <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
       </div>
@@ -1926,12 +2112,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }
 
   return (
-    <div className="flex flex-col h-[100vh]">
-      <div className="flex-1 min-h-0">
+    <div className="flex flex-col h-[100vh] overflow-hidden">
+      <div className="flex-1 min-h-0 w-full overflow-y-auto md:overflow-hidden">
         <ResizableThreeColumnLayout
           showLeftPanel={showAIAssistant}
           leftPanel={<AgentBuilderChat
-            initialPrompt={initialPrompt}
             agentConfig={{
               id: localAgentId ? parseInt(localAgentId) : undefined,
               name, description, instructions, executionMode, suggestedPrompts,
@@ -1959,9 +2144,10 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           middlePanel={LeftPanel}
           rightPanel={RightPanel}
           initialLeftWidth={20}
-          initialMiddleWidth={45}
+          initialMiddleWidth={50}
+          initialRightWidth={30}
           minLeftWidth={15}
-          minMiddleWidth={35}
+          minMiddleWidth={45}
           minRightWidth={20}
         />
       </div>
@@ -2069,23 +2255,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
             .then(data => setMcpServers(data || []))
             .catch(console.error)
         }}
-      />
-
-      <TemplatePrerequisiteModal
-        open={showPrerequisiteModal}
-        onOpenChange={setShowPrerequisiteModal}
-        unconnectedMcps={prerequisiteMcps}
-        needsKb={prerequisiteNeedsKb}
-        availableKbs={kbOptions}
-        selectedKbs={selectedKbs}
-        onKbsChange={(newValues) => {
-          setSelectedKbs(newValues)
-          if (newValues.length > 0 && !selectedToolCategories.includes("knowledge")) {
-            setSelectedToolCategories(prev => [...prev, "knowledge"])
-          }
-        }}
-        onConnectMcp={() => setIsConnectMcpOpen(true)}
-        onUploadKb={() => setIsKbModalOpen(true)}
       />
     </div>
   )

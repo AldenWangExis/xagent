@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Bot, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -69,6 +69,7 @@ export interface ChatMessageProps {
   taskStatus?: string;
   timestamp?: number | string;
   interactions?: any[];
+  interactionsActive?: boolean;
   onSendInteraction?: (message: string, files?: File[], metadata?: any) => Promise<void> | void;
 }
 
@@ -85,12 +86,14 @@ function GeneratingIndicator({ latestTitle, taskStatus, errorMessage }: { latest
 
   const displayTitle = taskStatus === 'paused'
     ? t("common.taskPaused")
+    : taskStatus === 'waiting_for_user'
+      ? t("common.waitingForUser")
     : (latestTitle ? `${latestTitle} ` : t("common.planning"));
 
   return (
     <div className="py-3 text-sm leading-relaxed text-muted-foreground flex items-center">
       <span>{displayTitle}</span>
-      {!["failed", "paused"].includes(taskStatus || "") && (
+      {!["failed", "paused", "waiting_for_user"].includes(taskStatus || "") && (
         <span className="ml-1 inline-flex items-end gap-1">
           <span className="dot" />
           <span className="dot" />
@@ -136,11 +139,25 @@ function ExpandableMessage({ content }: { content: string }) {
   const { t } = useI18n();
   const { openFilePreview } = useApp();
 
+  const updateOverflowState = useCallback(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    setIsOverflowing(el.scrollHeight > el.clientHeight + 1);
+  }, []);
+
   useEffect(() => {
-    if (contentRef.current) {
-      setIsOverflowing(contentRef.current.scrollHeight > 240);
-    }
-  }, [content]);
+    const el = contentRef.current;
+    if (!el) return;
+
+    const frameId = window.requestAnimationFrame(updateOverflowState);
+    const observer = new ResizeObserver(() => updateOverflowState());
+    observer.observe(el);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      observer.disconnect();
+    };
+  }, [content, isExpanded, updateOverflowState]);
 
   if (!content) return null;
 
@@ -205,11 +222,11 @@ function ExpandableMessage({ content }: { content: string }) {
   }
 
   return (
-    <div className="relative">
+    <div className="relative max-w-full min-w-0">
       <div
         ref={contentRef}
         className={cn(
-          "text-sm leading-relaxed whitespace-pre-wrap break-words transition-all duration-300 py-[2px]",
+          "max-w-full min-w-0 text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] transition-all duration-300 py-[2px]",
           !isExpanded && "max-h-[240px] overflow-hidden"
         )}
       >
@@ -257,6 +274,7 @@ export function ChatMessage({
   taskStatus,
   timestamp,
   interactions,
+  interactionsActive = true,
   onSendInteraction,
 }: ChatMessageProps) {
   const { t } = useI18n();
@@ -303,7 +321,14 @@ export function ChatMessage({
     if (!e) return "";
     const type = e.event_type || "";
     const action = (typeof e.data?.action === "string" ? (e.data!.action as string) : "") || type;
-    return t(`agent.logs.event.actions.${e.event_type}`) || action || t("common.executing");
+    if (type) {
+      const key = `agent.logs.event.actions.${type}`;
+      const label = t(key);
+      if (label !== key) {
+        return label;
+      }
+    }
+    return action || t("traceEventRenderer.taskExecution");
   };
 
   const latestTitle = getEventTitle(
@@ -341,8 +366,8 @@ export function ChatMessage({
           className={cn(
             "flex gap-4 transition-all duration-300",
             isUser
-              ? "bg-secondary text-secondary-foreground p-3 rounded-2xl flex-row-reverse items-center"
-              : "bg-transparent p-0 w-full"
+              ? "max-w-[85%] bg-secondary text-secondary-foreground p-3 rounded-2xl flex-row-reverse items-center"
+              : "bg-transparent p-0 w-full max-w-full"
           )}
         >
           {/* Avatar */}
@@ -365,20 +390,20 @@ export function ChatMessage({
                 ) : (
                   <MarkdownRenderer
                     content={content}
-                    className="prose-sm pt-2 leading-relaxed"
+                    className="prose-sm pt-2 leading-relaxed break-words [overflow-wrap:anywhere]"
                     onAgentClick={handleAgentClick}
                     onFileClick={handleFileClick}
                   />
                 )
               ) : (
-                <div className="text-sm leading-relaxed">{content}</div>
+                <div className="text-sm leading-relaxed break-words [overflow-wrap:anywhere]">{content}</div>
               )
             ) : (
               !isUser && <GeneratingIndicator latestTitle={latestTitle} taskStatus={taskStatus} errorMessage={errorMessage} />
             )}
             {!isUser && interactions && interactions.length > 0 && (
               <div className="mt-4 border-t pt-4">
-                <ClarificationForm interactions={interactions} onSend={onSendInteraction} />
+                <ClarificationForm interactions={interactions} active={interactionsActive} onSend={onSendInteraction} />
               </div>
             )}
           </div>

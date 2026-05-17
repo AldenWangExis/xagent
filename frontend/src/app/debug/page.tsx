@@ -42,7 +42,7 @@ interface Message {
 interface Task {
   id: string
   title: string
-  status: "pending" | "running" | "completed" | "failed" | "paused"
+  status: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_for_user"
   description: string
   createdAt: string
   updatedAt: string

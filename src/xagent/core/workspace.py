@@ -301,6 +301,42 @@ class TaskWorkspace:
         dirs.extend([str(d) for d in self.allowed_external_dirs])
         return dirs
 
+    def _resolve_allowed_absolute_path(self, path: Path) -> Path:
+        """Resolve an absolute path after checking workspace allowlists."""
+        abs_path = path.resolve()
+        workspace_abs = self.workspace_dir.resolve()
+        if abs_path == workspace_abs or abs_path.is_relative_to(workspace_abs):
+            return abs_path
+
+        for allowed_dir in self.allowed_external_dirs:
+            allowed_abs = allowed_dir.resolve()
+            if abs_path == allowed_abs or abs_path.is_relative_to(allowed_abs):
+                logger.debug(
+                    f"Accessing external file via allowed directory: {abs_path}"
+                )
+                return abs_path
+
+        allowed_dirs_str = ", ".join(
+            [str(self.workspace_dir)] + [str(d) for d in self.allowed_external_dirs]
+        )
+        raise ValueError(
+            f"Path {path} is outside allowed directories: {allowed_dirs_str}"
+        )
+
+    def _resolve_existing_cwd_relative_path(self, path: Path) -> Optional[Path]:
+        """Resolve a CWD-relative path if it exists and is explicitly allowed."""
+        if path.is_absolute():
+            return None
+
+        cwd_candidate = (Path.cwd() / path).resolve()
+        if not cwd_candidate.exists():
+            return None
+
+        try:
+            return self._resolve_allowed_absolute_path(cwd_candidate)
+        except ValueError:
+            return None
+
     def resolve_path(self, file_path: str, default_dir: str = "output") -> Path:
         """
         Resolve a file path within the workspace or allowed external directories.
@@ -319,29 +355,12 @@ class TaskWorkspace:
 
         if path.is_absolute():
             # For absolute paths, verify it's within workspace or allowed external directories
-            abs_path = path.resolve()
-
-            # Check if within workspace
-            workspace_abs = self.workspace_dir.resolve()
-            if abs_path == workspace_abs or abs_path.is_relative_to(workspace_abs):
-                return abs_path
-
-            # Check if within any allowed external directory
-            for allowed_dir in self.allowed_external_dirs:
-                if abs_path.is_relative_to(allowed_dir):
-                    logger.debug(
-                        f"Accessing external file via allowed directory: {abs_path}"
-                    )
-                    return abs_path
-
-            # Not in any allowed directory
-            allowed_dirs_str = ", ".join(
-                [str(self.workspace_dir)] + [str(d) for d in self.allowed_external_dirs]
-            )
-            raise ValueError(
-                f"Path {file_path} is outside allowed directories: {allowed_dirs_str}"
-            )
+            return self._resolve_allowed_absolute_path(path)
         else:
+            cwd_relative = self._resolve_existing_cwd_relative_path(path)
+            if cwd_relative is not None:
+                return cwd_relative
+
             # For relative paths, resolve relative to default directory
             if default_dir == "input":
                 return (self.input_dir / path).resolve()
@@ -404,29 +423,12 @@ class TaskWorkspace:
 
         if path.is_absolute():
             # For absolute paths, verify it's within workspace or allowed external directories
-            abs_path = path.resolve()
-
-            # Check if within workspace
-            workspace_abs = self.workspace_dir.resolve()
-            if abs_path == workspace_abs or abs_path.is_relative_to(workspace_abs):
-                return abs_path
-
-            # Check if within any allowed external directory
-            for allowed_dir in self.allowed_external_dirs:
-                if abs_path.is_relative_to(allowed_dir):
-                    logger.debug(
-                        f"Accessing external file via allowed directory: {abs_path}"
-                    )
-                    return abs_path
-
-            # Not in any allowed directory
-            allowed_dirs_str = ", ".join(
-                [str(self.workspace_dir)] + [str(d) for d in self.allowed_external_dirs]
-            )
-            raise ValueError(
-                f"Path {file_path} is outside allowed directories: {allowed_dirs_str}"
-            )
+            return self._resolve_allowed_absolute_path(path)
         else:
+            cwd_relative = self._resolve_existing_cwd_relative_path(path)
+            if cwd_relative is not None:
+                return cwd_relative
+
             # For relative paths, search in priority order
             # Strip directory prefixes if present to avoid duplicates
             clean_path = path
@@ -775,7 +777,12 @@ class TaskWorkspace:
                 # Query uploaded files for this user
                 query = db.query(UploadedFile).filter(UploadedFile.user_id == user_id)
                 total_count = query.count()
-                files = query.offset(offset).limit(limit).all()
+                files = (
+                    query.order_by(UploadedFile.id.desc())
+                    .offset(offset)
+                    .limit(limit)
+                    .all()
+                )
 
                 # Build file list from database
                 for file_record in files:

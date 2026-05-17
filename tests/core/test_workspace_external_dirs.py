@@ -4,9 +4,22 @@ Tests for TaskWorkspace external directory whitelist functionality.
 
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from xagent.core.workspace import TaskWorkspace
+
+
+@contextmanager
+def changed_cwd(path: Path):
+    import os
+
+    old_cwd = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old_cwd)
 
 
 class TestWorkspaceExternalDirs(unittest.TestCase):
@@ -83,6 +96,57 @@ class TestWorkspaceExternalDirs(unittest.TestCase):
         resolved = workspace_with_user_dir.resolve_path(str(user_file))
         self.assertEqual(resolved, user_file.resolve())
         print("✓ User upload directory whitelisted successfully")
+
+    def test_workspace_allows_cwd_relative_whitelisted_file(self):
+        """Test CWD-relative files are allowed only through explicit whitelists"""
+        user_upload_dir = Path(self.temp_dir) / "uploads" / "user_123"
+        user_upload_dir.mkdir(parents=True, exist_ok=True)
+        user_file = user_upload_dir / "user_document.pdf"
+        user_file.write_text("User document content")
+
+        workspace_with_user_dir = TaskWorkspace(
+            id="test_task",
+            base_dir=str(Path(self.temp_dir) / "workspaces"),
+            allowed_external_dirs=[str(user_upload_dir)],
+        )
+
+        with changed_cwd(Path(self.temp_dir)):
+            resolved = workspace_with_user_dir.resolve_path(
+                "uploads/user_123/user_document.pdf"
+            )
+
+        self.assertEqual(resolved, user_file.resolve())
+
+    def test_disallowed_cwd_relative_candidate_falls_back_to_workspace(self):
+        """Disallowed CWD files should not block normal workspace-relative paths."""
+        cwd_file = Path(self.temp_dir) / "README.md"
+        cwd_file.write_text("CWD README")
+
+        with changed_cwd(Path(self.temp_dir)):
+            resolved = self.workspace.resolve_path("README.md")
+
+        self.assertEqual(resolved, (self.workspace.output_dir / "README.md").resolve())
+
+    def test_workspace_rejects_other_user_file_inside_base_dir(self):
+        """Test uploads root access does not bypass the explicit whitelist"""
+        uploads_dir = Path(self.temp_dir) / "uploads"
+        user_upload_dir = uploads_dir / "user_123"
+        other_user_dir = uploads_dir / "user_456"
+        user_upload_dir.mkdir(parents=True, exist_ok=True)
+        other_user_dir.mkdir(parents=True, exist_ok=True)
+        other_user_file = other_user_dir / "secret.pdf"
+        other_user_file.write_text("Other user document")
+
+        workspace_with_user_dir = TaskWorkspace(
+            id="task_123",
+            base_dir=str(uploads_dir),
+            allowed_external_dirs=[str(user_upload_dir)],
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            workspace_with_user_dir.resolve_path(str(other_user_file))
+
+        self.assertIn("outside allowed directories", str(ctx.exception))
 
     def test_workspace_resolve_path_with_search_in_external_dirs(self):
         """Test resolve_path_with_search finds files in external directories"""

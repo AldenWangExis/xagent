@@ -19,6 +19,7 @@ const en = {
     executing: "Executing",
     planning: "Formulating Plan",
     taskPaused: "Task Paused",
+    waitingForUser: "Waiting for your response",
     noData: "No Data",
     code: "Code",
     preview: "Preview",
@@ -531,6 +532,7 @@ Build when you need.`
         failed: "Failed",
         pending: "Pending",
         paused: "Paused",
+        waitingForUser: "Waiting for user",
       },
       mode: {
         flash: "Flash",
@@ -1251,199 +1253,6 @@ Build when you need.`
       title: "Built-in Agents",
       badgeOfficial: "Official",
     },
-    text2sql: {
-      title: "Text2SQL Assistant",
-      descriptionShort: "Intelligent database query assistant that turns natural language into SQL",
-      featuresParagraph: "Supports multiple database types with schema analysis, SQL optimization, and result formatting. Ideal for data analysis, reporting, and business queries.",
-      startUsing: "Start Using",
-      config: {
-        subtitle: "Select a database connection to start querying",
-        connectionsTitle: "Database Connections",
-        startQuery: "Start Query",
-        noConnections: "No database connections yet. Add a new database below.",
-        readonlyBadge: "Read-only",
-        addNewDatabaseTitle: "Add New Database",
-        addDatabase: "Add Database",
-        adding: "Adding...",
-        form: {
-          nameLabel: "Database Name",
-          namePlaceholder: "Enter a database name, e.g., Production DB",
-          typeLabel: "Database Type",
-          urlLabel: "Connection String",
-          urlPlaceholder: "Enter the database connection string",
-          readonlyLabel: "Connect in read-only mode (recommended)",
-        },
-        alerts: {
-          fillAll: "Please fill in all required information",
-          addFailedPrefix: "Failed to add database: ",
-          unknownError: "Unknown error",
-          addFailed: "Failed to add database, please try again later",
-          testSuccess: "Connection test successful: {message}",
-          testFailedPrefix: "Connection test failed: ",
-          testFailed: "Connection test failed, please try again later",
-        },
-        statusBadge: {
-          connected: "Connected",
-          disconnected: "Disconnected",
-          error: "Error",
-        },
-        loginRequiredTitle: "Please log in",
-        loginRequiredDescription: "You need to log in to use the Text2SQL Assistant",
-      },
-      chat: {
-        login: {
-          title: "Please log in",
-          description: "Login required to use the Text2SQL Agent",
-        },
-        database: {
-          unknown: "Unknown Database",
-        },
-        connection: {
-          connected: "Connected",
-          connecting: "Connecting",
-          initializing: "Initializing connection...",
-          wsConnecting: "Establishing WebSocket connection...",
-          ready: "Connection ready",
-        },
-        history: {
-          title: "History",
-          newConversation: "Start new conversation",
-          emptyTitle: "No history",
-          emptyDescription: "Create a new task to start querying the database",
-          delete: "Delete task",
-          deleteConfirm: "Are you sure you want to delete this task?",
-          deleteFailed: "Failed to delete task",
-        },
-        mode: {
-          readOnly: "Read-only Mode",
-          readWrite: "Read-Write Mode",
-        },
-        initializing: "Initializing Text2SQL Assistant...",
-        welcome: {
-          title: "Welcome to Text2SQL Assistant",
-          description: "Select a conversation from the left, or type below to start querying",
-          featuresTitle: "Text2SQL Assistant can help you:",
-          features: {
-            naturalToSql: "Convert natural language to SQL queries",
-            analyzeSchema: "Analyze database schema",
-            executeAndShow: "Execute SQL and display results",
-            optimizeQuery: "Provide query optimization suggestions",
-          },
-        },
-        input: {
-          title: "Enter your query request",
-          hint: "Tip: The assistant will analyze the database schema and generate SQL automatically",
-          placeholder: "Please enter your query...",
-        },
-        status: {
-          ready: "Ready",
-          connecting: "Connecting...",
-          initializing: "Initializing...",
-        },
-        aiSummary: {
-          title: "AI Summary",
-        },
-        table: {
-          title: "Query Results",
-          titleWithCount: "Query Results ({count} records)",
-          buttons: {
-            chart: "Charts",
-            bar: "Bar Chart",
-            pie: "Pie Chart",
-            line: "Line Chart",
-            copyData: "Copy Data",
-            exportCsv: "Export CSV",
-            copy: "Copy",
-          },
-        },
-        steps: {
-          analyzeSchema: "Analyze Database Schema",
-          executeSql: "Execute SQL Query",
-          formatResult: "Format Result",
-          defaultStep: "Query Processing Step",
-          plan: "Planning Strategy",
-        },
-        thinking: {
-          schemaCompleted: "Database schema analysis completed",
-          schemaRunning: "Analyzing database schema and relationships...",
-          sqlGenCompleted: "SQL query generation completed",
-          sqlGenRunning: "Generating and optimizing SQL query...",
-          executeCompleted: "SQL query execution completed",
-          executeRunning: "Executing SQL query...",
-          formatCompleted: "Query result formatting completed",
-          formatRunning: "Organizing and formatting query results...",
-          planCompleted: "Query strategy planning completed",
-          planRunning: "Planning query strategy and execution plan...",
-          analysisCompleted: "Problem analysis completed",
-          analysisRunning: "Analyzing the problem and database structure...",
-          sqlStatementCompleted: "SQL statement generation completed",
-          sqlStatementRunning: "Generating SQL query statements...",
-          queryCompleted: "Query execution completed",
-          queryRunning: "Executing query operation...",
-          stepCompleted: "Query step processing completed",
-          stepRunning: "Processing query step...",
-        },
-      },
-      timeline: {
-        title: "Thinking Timeline",
-        stepType: {
-          planning: "Planning",
-          analysis: "Analysis",
-          sql_generation: "SQL Generation",
-          execution: "Execution",
-          result: "Result"
-        },
-        status: {
-          pending: "Pending",
-          running: "Running",
-          completed: "Completed",
-          failed: "Failed"
-        },
-        details: {
-          sql: "Generated SQL",
-          result: "Query Result",
-          error: "Error"
-        },
-        actions: {
-          cancelAutoCollapse: "Cancel Auto Collapse",
-          toggleStep: "Toggle Step: {name}"
-        },
-        labels: {
-          dependencies: "Dependencies: {count}",
-          unknownStatus: "Unknown Status",
-          basedOnSteps: "Based on steps: {steps}"
-        }
-      },
-      charts: {
-        noNumericData: "No numeric data suitable for charts",
-        switchToTable: "Switch to Table",
-        bar: {
-          rankTop: "{valueColumn} Ranking (Top {top})",
-        },
-        pie: {
-          distributionTop: "{valueColumn} Distribution (Top {top})",
-        },
-        line: {
-          trendTop: "{valueColumn} Trend (Top {top})",
-        },
-        predict: {
-          buttonPredict: "AI Predict",
-          buttonPredicting: "Predicting...",
-          successDefault: "Prediction data generated successfully",
-          failedDefault: "Prediction generation failed",
-          requestFailedHttp: "Prediction request failed: HTTP {status}",
-          requestFailedNetwork: "Prediction request failed: Unable to connect to prediction service",
-        },
-        analysis: {
-          trendAnalysisLabel: "Trend Analysis:",
-          confidence: "Confidence: {confidence}",
-        },
-        legend: {
-          historical: "Historical Data",
-          prediction: "Predicted Data",
-        },
-      },
-    },
     stats: {
       users: "{count} users",
       usesToday: "{count} uses today",
@@ -1469,7 +1278,6 @@ Build when you need.`
     footer: {
       title: "Get Started with AI Agents",
       description: "Choose the right agent for your needs and start intelligent workflows immediately",
-      tryText2SQL: "Try Text2SQL",
       createCustomAgent: "Create Custom Agent",
     },
   },
@@ -1632,6 +1440,9 @@ Build when you need.`
     providers: {
       openai: {
         description: "Access GPT-4o, GPT-4 Turbo, and DALL-E 3 models. Industry standard for reasoning and creativity.",
+      },
+      deepseek: {
+        description: "DeepSeek v4 models with native tool calling and configurable thinking mode.",
       },
       "minimax-coding-plan": {
         description: "MiniMax Coding Plan endpoint (Anthropic-compatible, minimax.io).",
@@ -2029,19 +1840,6 @@ Build when you need.`
     },
   },
   builds: {
-    prerequisites: {
-      title: "Setup Prerequisites",
-      description: "To fully utilize this template's capabilities, please complete the following configurations first:",
-      mcpTitle: "Connect Required Tools",
-      mcpDesc: "This template requires:",
-      connectBtn: "Connect",
-      kbTitle: "Knowledge Base",
-      kbDesc: "Upload or select existing references or documents that this template can utilize.",
-      uploadBtn: "Upload New",
-      selectKbPlaceholder: "Or select existing knowledge bases...",
-      skipBtn: "Skip for now",
-      doneBtn: "Got it"
-    },
     header: {
       title: "Build History",
       description: "View and manage build history",
@@ -2075,8 +1873,6 @@ Build when you need.`
         }
       },
       action: "+ Create Your First Agent"
-    },
-    table: {
     },
     stats: {
       total: "Total {count} builds"
@@ -2129,7 +1925,8 @@ Build when you need.`
         describeTitle: "By Describing It",
         describeDesc: "Tell us what you want — {appName} will pre-fill the configuration for you",
         placeholder: "e.g. A customer support agent that answers product questions, handles refund requests, and escalates complex issues to human agents...",
-        buildBtn: "Build Agent",
+        buildBtn: "Start Task",
+        startTaskFailed: "Failed to create task. Please try again.",
         manualTitle: "Manually",
         manualDesc: "Open a blank form and configure each field yourself from scratch",
         manualBtn: "Go to Builder",
@@ -2148,10 +1945,16 @@ Build when you need.`
     },
     editor: {
       aiAssistant: "{appName} Assistant",
+      stepGuide: {
+        title: "Build Your Agent",
+        describe: "Describe your agent",
+        configure: "Configure & Connect",
+        preview: "Test In Preview",
+        completed: "All steps complete - click the Create button to publish your agent.",
+      },
       header: {
         title: "Custom Agent",
         subtitle: "Configure your AI agent's behavior and capabilities.",
-        backToList: "Back to list",
         create: "Create",
         update: "Update",
         publish: "Publish",
@@ -2343,6 +2146,9 @@ Build when you need.`
       }
     }
   },
+  markdownRenderer: {
+    loadAgentDetailsFailed: "Unable to load agent details",
+  },
   agent: {
     header: {
       backTitle: "Back to Vibe",
@@ -2385,6 +2191,7 @@ Build when you need.`
           completed: "Completed",
           failed: "Failed",
           paused: "Paused",
+          waitingForUser: "Waiting for user",
         },
         selectedFiles: "Selected {count} files",
         taskStatusPrefix: "Task Status: ",
@@ -2465,6 +2272,7 @@ Build when you need.`
       failed: "Failed",
       pending: "Pending",
       paused: "Paused",
+      waitingForUser: "Waiting for user",
     },
     planDetails: {
       collapsibleTitle: "Details",
@@ -2649,6 +2457,7 @@ Build when you need.`
           requiredBranch: "Required Branch:",
           branches: "Branches:",
           tools: "Tools:",
+          suggestedTools: "Suggested tools:",
           pureAnalysis: "Pure Analysis",
           description: "Description:",
           result: "Execution Result",
@@ -2711,6 +2520,9 @@ Build when you need.`
         },
         actions: {
           dag_execution: "DAG Execution Start",
+          task_start_general: "Thinking",
+          task_update_general: "Updating",
+          task_completion: "Task Completed",
           dag_step_start: "Step Start",
           dag_step_end: "Step Completed",
           dag_step_failed: "Step Failed",
@@ -2982,10 +2794,11 @@ Build when you need.`
   },
   traceEventRenderer: {
     skillSelected: "Selected Skill",
-    taskExecution: "Task Execution",
+    taskExecution: "Thinking",
     unknownModel: "Unknown Model",
     callLLM: "Call LLM: {model}",
     llmResponse: "LLM Response",
+    stepResult: "Step Result",
     unknownTool: "Unknown Tool",
     executeTool: "Execute Tool: {tool}",
     sandboxedExecution: "Safely sandboxed",

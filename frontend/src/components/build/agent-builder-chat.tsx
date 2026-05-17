@@ -4,7 +4,7 @@ import { ChatMessage } from "@/components/chat/ChatMessage"
 import { ChatInput } from "@/components/chat/ChatInput"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useAuth } from "@/contexts/auth-context"
-import { getApiUrl } from "@/lib/utils"
+import { getApiUrl, getUploadApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
 import { toast } from "sonner"
@@ -64,15 +64,13 @@ interface AgentBuilderChatProps {
   agentConfig: AgentConfig
   onUpdateConfig: (config: Partial<AgentConfig>) => void
   availableOptions?: any
-  initialPrompt?: string | null
   toolCategories?: string[]
 }
 
-export function AgentBuilderChat({ agentConfig, onUpdateConfig, availableOptions, initialPrompt, toolCategories = [] }: AgentBuilderChatProps) {
+export function AgentBuilderChat({ agentConfig, onUpdateConfig, availableOptions, toolCategories = [] }: AgentBuilderChatProps) {
   const { t } = useI18n()
   const { token } = useAuth()
   const [messages, setMessages] = useState<Message[]>([])
-  const [hasSentInitial, setHasSentInitial] = useState(false)
   const branding = getBrandingFromEnv()
 
   // Set initial message on mount to avoid hydration mismatch and get translation
@@ -148,7 +146,7 @@ export function AgentBuilderChat({ agentConfig, onUpdateConfig, availableOptions
         files.forEach(f => formData.append('files', f));
         formData.append('task_type', 'task');
 
-        const uploadResponse = await apiRequest(`${getApiUrl()}/api/files/upload`, {
+        const uploadResponse = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
           method: 'POST',
           body: formData,
         });
@@ -173,7 +171,7 @@ export function AgentBuilderChat({ agentConfig, onUpdateConfig, availableOptions
       }
     } else if (metadata?.url) {
       const url = metadata.url;
-      finalMessage += `\n\n[System Note: The user has provided the website URL: ${url}. Please IMMEDIATELY use the \`create_knowledge_base_from_url\` tool to ingest it, then create/update the agent with the new knowledge base. Do not ask for the URL again.]`;
+      finalMessage += `\n\n[System Note: The user has provided the website URL: ${url}. Do not ask for the URL again. Before deciding whether to create a new knowledge base, you MUST first call \`list_knowledge_bases\` to check whether a relevant knowledge base for this website/domain already exists. Only if no relevant knowledge base exists should you call \`create_knowledge_base_from_url\`, then create/update the agent with that knowledge base.]`;
     }
 
     const sendPayload = (ws: WebSocket) => {
@@ -279,50 +277,72 @@ export function AgentBuilderChat({ agentConfig, onUpdateConfig, availableOptions
                     return updated
                   })
                 }
+              } else if (data.event_type === "agent_message") {
+                const displayReply = data.data?.message || ""
+                const interactions = data.data?.metadata?.interactions
+                if (data.data?.expect_response) {
+                  setIsLoading(false)
+                }
+                setMessages(prev => {
+                  const updated = [...prev]
+                  const lastMsg = updated[updated.length - 1]
+                  if (!lastMsg || lastMsg.role !== 'assistant') {
+                    return updated
+                  }
+                  updated[updated.length - 1] = {
+                    ...lastMsg,
+                    content: displayReply,
+                    interactions: Array.isArray(interactions) ? interactions : lastMsg.interactions
+                  }
+                  return updated
+                })
               } else if (data.event_type === "tool_execution_start") {
                 // Update state to indicate tool is running if needed
                 console.log("Tool execution started:", data.data)
               } else if (data.event_type === "tool_execution_end") {
                 // Tool finished
                 console.log("Tool execution ended:", data.data)
-                if (data.data && (data.data.tool_name === "create_agent" || data.data.tool_name === "update_agent") && data.data.tool_args && typeof data.data.tool_args === 'object') {
-                  // Extract configuration updates from tool_args and agent_id from result
-                  const toolArgs = data.data.tool_args;
-                  const result = data.data.result || {};
+                if (data.data && (data.data.tool_name === "create_agent" || data.data.tool_name === "update_agent")) {
+                  // Extract configuration updates from tool_args/tool_params and agent_id from result
+                  const toolArgs = data.data.tool_args || data.data.tool_params;
 
-                  if (result.status === "success") {
-                    const configUpdates: Partial<AgentConfig> = {};
-                    if (toolArgs.name) configUpdates.name = toolArgs.name;
-                    if (toolArgs.description) configUpdates.description = toolArgs.description;
-                    if (toolArgs.instructions) configUpdates.instructions = toolArgs.instructions;
-                    if (toolArgs.knowledge_bases) {
-                      const kbs = Array.isArray(toolArgs.knowledge_bases) ? toolArgs.knowledge_bases : [toolArgs.knowledge_bases];
-                      configUpdates.selectedKbs = kbs.map((kb: any) => typeof kb === 'string' ? kb : kb.name || kb.value).filter(Boolean);
-                    }
-                    if (toolArgs.skills) {
-                      const skills = Array.isArray(toolArgs.skills) ? toolArgs.skills : [toolArgs.skills];
-                      configUpdates.selectedSkills = skills.map((skill: any) => typeof skill === 'string' ? skill : skill.name || skill.value).filter(Boolean);
-                    }
-                    if (toolArgs.tool_categories) {
-                      const tcs = Array.isArray(toolArgs.tool_categories) ? toolArgs.tool_categories : [toolArgs.tool_categories];
-                      configUpdates.selectedToolCategories = tcs.map((tc: any) => typeof tc === 'string' ? tc : tc.name || tc.category || tc.value).filter(Boolean);
-                    }
-                    if (toolArgs.suggested_prompts) {
-                      const sp = Array.isArray(toolArgs.suggested_prompts) ? toolArgs.suggested_prompts : [toolArgs.suggested_prompts];
-                      configUpdates.suggestedPrompts = sp.map((p: any) => typeof p === 'string' ? p : p.value || p.prompt).filter(Boolean);
-                    }
-                    if (result.agent_id) {
-                      configUpdates.id = result.agent_id;
-                    }
-                    if (Object.keys(configUpdates).length > 0) {
-                      onUpdateConfig(configUpdates);
-                    }
+                  if (toolArgs && typeof toolArgs === 'object') {
+                    const result = data.data.result || {};
 
-                    // Update URL if agent was created
-                    if (result.agent_id) {
-                      const currentUrl = window.location.pathname;
-                      if (currentUrl === '/build/new' || currentUrl === '/build') {
-                        window.history.pushState({}, '', `/build/${result.agent_id}`);
+                    if (result.status === "success") {
+                      const configUpdates: Partial<AgentConfig> = {};
+                      if (toolArgs.name) configUpdates.name = toolArgs.name;
+                      if (toolArgs.description) configUpdates.description = toolArgs.description;
+                      if (toolArgs.instructions) configUpdates.instructions = toolArgs.instructions;
+                      if (toolArgs.knowledge_bases) {
+                        const kbs = Array.isArray(toolArgs.knowledge_bases) ? toolArgs.knowledge_bases : [toolArgs.knowledge_bases];
+                        configUpdates.selectedKbs = kbs.map((kb: any) => typeof kb === 'string' ? kb : kb.name || kb.value).filter(Boolean);
+                      }
+                      if (toolArgs.skills) {
+                        const skills = Array.isArray(toolArgs.skills) ? toolArgs.skills : [toolArgs.skills];
+                        configUpdates.selectedSkills = skills.map((skill: any) => typeof skill === 'string' ? skill : skill.name || skill.value).filter(Boolean);
+                      }
+                      if (toolArgs.tool_categories) {
+                        const tcs = Array.isArray(toolArgs.tool_categories) ? toolArgs.tool_categories : [toolArgs.tool_categories];
+                        configUpdates.selectedToolCategories = tcs.map((tc: any) => typeof tc === 'string' ? tc : tc.name || tc.category || tc.value).filter(Boolean);
+                      }
+                      if (toolArgs.suggested_prompts) {
+                        const sp = Array.isArray(toolArgs.suggested_prompts) ? toolArgs.suggested_prompts : [toolArgs.suggested_prompts];
+                        configUpdates.suggestedPrompts = sp.map((p: any) => typeof p === 'string' ? p : p.value || p.prompt).filter(Boolean);
+                      }
+                      if (result.agent_id) {
+                        configUpdates.id = result.agent_id;
+                      }
+                      if (Object.keys(configUpdates).length > 0) {
+                        onUpdateConfig(configUpdates);
+                      }
+
+                      // Update URL if agent was created
+                      if (result.agent_id) {
+                        const currentUrl = window.location.pathname;
+                        if (currentUrl === '/build/new' || currentUrl === '/build') {
+                          window.history.replaceState(null, '', `/build/${result.agent_id}`);
+                        }
                       }
                     }
                   }
@@ -411,14 +431,6 @@ export function AgentBuilderChat({ agentConfig, onUpdateConfig, availableOptions
       setIsLoading(false)
     }
   }, [messages, isLoading, token, agentConfig, onUpdateConfig])
-
-  // Handle initial prompt from URL
-  useEffect(() => {
-    if (initialPrompt && !hasSentInitial && token && messages.length > 0 && !isLoading) {
-      setHasSentInitial(true)
-      handleSendMessage(initialPrompt)
-    }
-  }, [initialPrompt, hasSentInitial, token, messages.length, isLoading, handleSendMessage])
 
   const handleStop = () => {
     if (wsRef.current) {

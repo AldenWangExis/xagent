@@ -79,6 +79,12 @@ def get_event_type_mapping(event: TraceEvent) -> str:
         return "llm_call_end"
     elif (
         scope == TraceScope.ACTION
+        and action == TraceAction.ERROR
+        and category == TraceCategory.LLM
+    ):
+        return "llm_call_failed"
+    elif (
+        scope == TraceScope.ACTION
         and action == TraceAction.START
         and category == TraceCategory.TOOL
     ):
@@ -89,6 +95,12 @@ def get_event_type_mapping(event: TraceEvent) -> str:
         and category == TraceCategory.TOOL
     ):
         return "tool_execution_end"
+    elif (
+        scope == TraceScope.ACTION
+        and action == TraceAction.ERROR
+        and category == TraceCategory.TOOL
+    ):
+        return "tool_execution_failed"
     elif action == TraceAction.ERROR:
         return "trace_error"
     elif (
@@ -189,6 +201,27 @@ def get_event_type_mapping(event: TraceEvent) -> str:
 logger = logging.getLogger(__name__)
 
 
+def is_agent_checkpoint_data(data: Any) -> bool:
+    """Return True for internal agent checkpoint payloads.
+
+    These events are persisted for resume/recovery, but they are too large and
+    too low-level for the user-facing execution log stream.
+    """
+    if not isinstance(data, dict):
+        return False
+    try:
+        from ...core.agent.checkpoint import READABLE_CHECKPOINT_TYPES
+    except Exception:
+        READABLE_CHECKPOINT_TYPES = frozenset(
+            {"agent_execution_checkpoint", "agent_v2_execution_checkpoint"}
+        )
+    return data.get("checkpoint_type") in READABLE_CHECKPOINT_TYPES or (
+        data.get("type") == "checkpoint"
+        and isinstance(data.get("pattern_state"), dict)
+        and isinstance(data.get("context"), dict)
+    )
+
+
 def _convert_timestamp_to_utc_timestamp(timestamp: Any) -> float:
     """Convert timestamp to Unix timestamp for WebSocket compatibility."""
     if timestamp is None:
@@ -281,7 +314,9 @@ class WebSocketTraceHandler(TraceHandler):
         finally:
             db.close()
 
-    def _convert_trace_event_to_stream_event(self, event: TraceEvent) -> Dict[str, Any]:
+    def _convert_trace_event_to_stream_event(
+        self, event: TraceEvent
+    ) -> Optional[Dict[str, Any]]:
         """Convert trace event to unified stream format."""
         event_type_str = get_event_type_mapping(event)
         logger.debug(
@@ -290,6 +325,8 @@ class WebSocketTraceHandler(TraceHandler):
 
         # Make a deep copy of data and serialize non-JSON-serializable objects
         data = self._serialize_data(event.data)
+        if is_agent_checkpoint_data(data):
+            return None
 
         # Create the base stream event
         stream_event = create_stream_event(
@@ -333,6 +370,8 @@ class WebSocketTraceHandler(TraceHandler):
             # Handle Pydantic models (BaseModel)
             if hasattr(value, "model_dump"):
                 return serialize_value(value.model_dump())
+            elif callable(getattr(value, "to_dict", None)):
+                return serialize_value(value.to_dict())
             elif hasattr(value, "dict"):  # Fallback for older Pydantic
                 return serialize_value(value.dict())
             elif isinstance(value, datetime):

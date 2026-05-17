@@ -25,7 +25,7 @@ interface Message {
 interface Task {
   id: string
   title: string
-  status: "pending" | "running" | "completed" | "failed" | "paused"
+  status: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_for_user"
   description: string
   createdAt: string | number
   updatedAt: string | number
@@ -77,6 +77,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
       case "failed":
         return <XCircle className="h-4 w-4 text-destructive" />
       case "paused":
+      case "waiting_for_user":
         return <Clock className="h-4 w-4 text-secondary-foreground" />
       default:
         return <Clock className="h-4 w-4 text-muted-foreground" />
@@ -89,7 +90,8 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
       running: "default",
       completed: "default",
       failed: "destructive",
-      paused: "secondary"
+      paused: "secondary",
+      waiting_for_user: "secondary"
     } as const
 
     const labels = {
@@ -98,6 +100,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
       completed: t("agent.layout.status.completed"),
       failed: t("agent.layout.status.failed"),
       paused: t("agent.layout.status.paused"),
+      waiting_for_user: t("agent.layout.status.waitingForUser"),
     }
 
     const customStyles = {
@@ -105,7 +108,8 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
       running: "bg-primary/10 text-primary border-primary/20",
       completed: "bg-green-500/10 text-green-500 border-green-500/20",
       failed: "bg-destructive/10 text-destructive border-destructive/20",
-      paused: "bg-secondary text-secondary-foreground border-border"
+      paused: "bg-secondary text-secondary-foreground border-border",
+      waiting_for_user: "bg-secondary text-secondary-foreground border-border"
     }
 
     return (

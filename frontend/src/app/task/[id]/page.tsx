@@ -161,6 +161,7 @@ function TaskDetailContent() {
     rawContent?: string;
     timestamp: number;
     traceEvents?: any[];
+    interactions?: any[];
   };
   const combinedItems: CombinedItem[] = useMemo(() => {
     const toTime = (ts: any): number => {
@@ -191,12 +192,104 @@ function TaskDetailContent() {
         rawContent: m.rawContent,
         timestamp: toTime(m.timestamp),
         traceEvents: m.traceEvents,
+        interactions: m.interactions,
       }));
 
     const merged = msgItems;
     merged.sort((a, b) => a.timestamp - b.timestamp);
     return merged;
   }, [state.messages]);
+
+  const waitingPrompt = useMemo(() => {
+    if (state.currentTask?.status !== 'waiting_for_user') {
+      return null;
+    }
+    if (state.currentTask.waitingQuestion) {
+      return state.currentTask.waitingQuestion;
+    }
+
+    for (let i = state.traceEvents.length - 1; i >= 0; i--) {
+      const event = state.traceEvents[i] as any;
+      if (event.event_type === 'agent_message') {
+        const expectsResponse = event.data?.expect_response === true || event.data?.message_type === 'question';
+        if (!expectsResponse) {
+          continue;
+        }
+        const message = event.data?.message || event.data?.content;
+        if (typeof message === 'string' && message.trim()) {
+          return message;
+        }
+      }
+      if (event.event_type === 'react_task_end') {
+        const result = event.data?.result;
+        if (result?.status === 'waiting_for_user' && typeof result.message === 'string' && result.message.trim()) {
+          return result.message;
+        }
+      }
+    }
+
+    return null;
+  }, [state.currentTask?.status, state.currentTask?.waitingQuestion, state.traceEvents]);
+
+  const waitingInteractions = useMemo(() => {
+    if (state.currentTask?.status !== 'waiting_for_user') {
+      return undefined;
+    }
+    if (state.currentTask.waitingInteractions?.length) {
+      return state.currentTask.waitingInteractions;
+    }
+
+    for (let i = state.traceEvents.length - 1; i >= 0; i--) {
+      const event = state.traceEvents[i] as any;
+      if (event.event_type === 'agent_message') {
+        const expectsResponse = event.data?.expect_response === true || event.data?.message_type === 'question';
+        if (!expectsResponse) {
+          continue;
+        }
+        const interactions = event.data?.metadata?.interactions;
+        if (Array.isArray(interactions) && interactions.length > 0) {
+          return interactions;
+        }
+      }
+      if (event.event_type === 'react_task_end') {
+        const interactions = event.data?.result?.interactions;
+        if (Array.isArray(interactions) && interactions.length > 0) {
+          return interactions;
+        }
+      }
+    }
+
+    return undefined;
+  }, [state.currentTask?.status, state.currentTask?.waitingInteractions, state.traceEvents]);
+
+  const activeWaitingMessageId = useMemo(() => {
+    if (state.currentTask?.status !== 'waiting_for_user') {
+      return null;
+    }
+
+    if (waitingPrompt) {
+      const normalizedPrompt = waitingPrompt.trim();
+      for (let i = combinedItems.length - 1; i >= 0; i--) {
+        const item = combinedItems[i];
+        if (
+          item.role === 'assistant' &&
+          typeof item.content === 'string' &&
+          item.content.trim() === normalizedPrompt
+        ) {
+          return item.id;
+        }
+      }
+    }
+
+    for (let i = combinedItems.length - 1; i >= 0; i--) {
+      const item = combinedItems[i];
+      if (item.role === 'assistant' && item.interactions && item.interactions.length > 0) {
+        return item.id;
+      }
+    }
+
+    return null;
+  }, [combinedItems, state.currentTask?.status, waitingPrompt]);
 
   // DAG node and edge calculation
   const dagreGraph = new dagre.graphlib.Graph();
@@ -374,17 +467,29 @@ function TaskDetailContent() {
                       traceEvents={item.traceEvents as any || []}
                       showProcessView={true}
                       timestamp={item.timestamp}
+                      interactions={item.interactions}
+                      interactionsActive={item.id === activeWaitingMessageId}
                     />
                   ))}
 
-                  {(state.isProcessing || (state.traceEvents?.length || 0) > 0 || state.currentTask?.status === 'paused') && !hasFinalAssistantMessage && (
+                  {(state.isProcessing || (state.traceEvents?.length || 0) > 0 || state.currentTask?.status === 'paused' || state.currentTask?.status === 'waiting_for_user') && !hasFinalAssistantMessage && (
                     <ChatMessage
                       role="assistant"
-                      content={null}
+                      content={
+                        state.currentTask?.status === 'waiting_for_user'
+                          ? waitingPrompt
+                          : null
+                      }
                       traceEvents={state.traceEvents as any || []}
                       showProcessView={true}
                       isVirtual
                       taskStatus={state.currentTask?.status}
+                      interactions={
+                        state.currentTask?.status === 'waiting_for_user'
+                          ? waitingInteractions
+                          : undefined
+                      }
+                      interactionsActive={state.currentTask?.status === 'waiting_for_user'}
                     />
                   )}
                 </>
@@ -397,35 +502,37 @@ function TaskDetailContent() {
         {/* Fixed input box at bottom */}
         <div className="flex-shrink-0 z-10 glass pb-6">
           <div className="container max-w-4xl mx-auto px-4">
-            <div className="mb-4 flex items-center">
-              {state.currentTask?.isDag !== false && (
-                <div
-                  className="inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur p-2 cursor-pointer hover:bg-muted/30 transition-colors text-sm"
-                  onClick={() => {
-                    closeFilePreview();
-                    setDagPreviewOpen(true);
-                  }}
-                  title={t("chatPage.executionPlan.title")}
-                >
-                  <GitMerge className="w-3.5 h-3.5" />
-                  {t("chatPage.executionPlan.title")}
-                </div>
-              )}
+            <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {state.currentTask?.isDag !== false && (
+                  <div
+                    className="inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur px-3 py-2 cursor-pointer hover:bg-muted/30 transition-colors text-sm shrink-0"
+                    onClick={() => {
+                      closeFilePreview();
+                      setDagPreviewOpen(true);
+                    }}
+                    title={t("chatPage.executionPlan.title")}
+                  >
+                    <GitMerge className="w-3.5 h-3.5" />
+                    {t("chatPage.executionPlan.title")}
+                  </div>
+                )}
 
-              <TaskFileManager
-                taskId={state.taskId}
-                onPreview={(fileId, fileName) => openFilePreview(fileId, fileName)}
-              >
-                <div
-                  className="ml-2 inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur p-2 cursor-pointer hover:bg-muted/30 transition-colors text-sm"
-                  title={t("files.header.title")}
+                <TaskFileManager
+                  taskId={state.taskId}
+                  onPreview={(fileId, fileName) => openFilePreview(fileId, fileName)}
                 >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  {t("files.header.title")}
-                </div>
-              </TaskFileManager>
+                  <div
+                    className="inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur px-3 py-2 cursor-pointer hover:bg-muted/30 transition-colors text-sm shrink-0"
+                    title={t("files.header.title")}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    {t("files.header.title")}
+                  </div>
+                </TaskFileManager>
+              </div>
 
-              <div className="ml-auto">
+              <div className="sm:ml-auto">
                 <TokenUsageDisplay
                   taskId={state.taskId}
                   isRunning={state.currentTask?.status === 'running'}

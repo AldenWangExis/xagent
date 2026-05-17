@@ -19,9 +19,10 @@ interface WebSocketMessage {
 }
 import { useWebSocket } from "@/hooks/use-websocket"
 import { useAuth } from "@/contexts/auth-context"
-import { getApiUrl } from "@/lib/utils"
+import { getApiUrl, getUploadApiUrl } from "@/lib/utils"
 import { apiRequest, getUploadErrorMessage, isJsonRecord, parseApiResponse, UPLOAD_ERROR_MESSAGES } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
+import { unwrapFinalAnswerContent } from "@/lib/final-answer"
 
 // Unique ID generator for messages
 let messageIdCounter = 0
@@ -55,13 +56,14 @@ const processMessageForReplay = (message: WebSocketMessage, dispatch: React.Disp
 
       if (eventType === "agent_message") {
         const eventData = traceEventData.data || traceEventData || {}
-        if (eventData.content) {
+        const content = eventData.content || eventData.message || ""
+        if (content) {
           dispatch({
             type: "ADD_MESSAGE",
             payload: {
               id: generateMessageId("msg-replay"),
               role: eventData.role || "assistant",
-              content: eventData.content,
+              content,
               timestamp: message.timestamp,
               status: "completed",
             }
@@ -126,6 +128,9 @@ const isDuplicateResult = (content: string) => {
   return isDuplicateMessage(content, 'result')
 }
 
+const normalizeInteractions = (value: unknown): unknown[] => {
+  return Array.isArray(value) ? value : []
+}
 
 interface Message {
   id: string
@@ -135,12 +140,13 @@ interface Message {
   status?: "pending" | "running" | "completed" | "failed"
   isResult?: boolean
   isFileOutput?: boolean
+  interactions?: unknown[]
 }
 
 interface Task {
   id: string
   title: string
-  status: "pending" | "running" | "completed" | "failed" | "paused"
+  status: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_for_user"
   description: string
   createdAt: string | number
   updatedAt: string | number
@@ -153,6 +159,8 @@ interface Task {
   smallFastModelName?: string
   visualModelName?: string
   executionMode?: "flash" | "balanced" | "think"
+  waitingQuestion?: string
+  waitingInteractions?: unknown[]
 }
 
 interface StepExecution {
@@ -185,6 +193,50 @@ interface DAGExecution {
   current_plan: Record<string, unknown>
   created_at: string | number
   updated_at: string | number
+}
+
+const normalizeStepStatus = (status: unknown): StepExecution["status"] => {
+  return status === "running" || status === "completed" || status === "failed" || status === "skipped"
+    ? status
+    : "pending"
+}
+
+const getString = (value: unknown, fallback = ""): string => typeof value === "string" ? value : fallback
+const getStringArray = (value: unknown): string[] => Array.isArray(value) ? value.map(item => String(item)) : []
+
+const stepsFromPlanData = (planData: unknown, existingSteps: StepExecution[]): StepExecution[] | null => {
+  const planRecord = planData && typeof planData === "object" ? planData as Record<string, unknown> : null
+  const planSteps = Array.isArray(planRecord?.steps) ? planRecord.steps : null
+  if (!planSteps) {
+    return null
+  }
+
+  const existingStepsMap = new Map<string, StepExecution>()
+  existingSteps.forEach(step => existingStepsMap.set(step.id, step))
+
+  return planSteps.map((rawStep: unknown) => {
+    const step = rawStep && typeof rawStep === "object" ? rawStep as Record<string, unknown> : {}
+    const id = String(step.id)
+    const existingStep = existingStepsMap.get(id)
+    const task = getString(step.task)
+    const name = getString(step.name, task || id)
+    return {
+      id,
+      name,
+      description: getString(step.description, task),
+      status: existingStep?.status || normalizeStepStatus(step.status),
+      tool_names: step.tool_name ? [String(step.tool_name)] : getStringArray(step.tool_names),
+      dependencies: getStringArray(step.dependencies),
+      started_at: existingStep?.started_at || getString(step.started_at),
+      completed_at: existingStep?.completed_at || getString(step.completed_at),
+      result_data: step.result_data ?? step.result,
+      step_data: step.step_data,
+      file_outputs: getStringArray(step.file_outputs),
+      conditional_branches: step.conditional_branches && typeof step.conditional_branches === "object" ? step.conditional_branches as Record<string, string> : {},
+      required_branch: typeof step.required_branch === "string" ? step.required_branch : null,
+      is_conditional: step.is_conditional === true,
+    }
+  })
 }
 
 interface AppState {
@@ -231,7 +283,7 @@ type AppAction =
   | { type: "SET_TASK_ID"; payload: number | null }
   | { type: "ADD_MESSAGE"; payload: Message }
   | { type: "SET_CURRENT_TASK"; payload: Task }
-  | { type: "UPDATE_TASK_STATUS"; payload: { status: Task["status"] } }
+  | { type: "UPDATE_TASK_STATUS"; payload: { status: Task["status"]; waitingQuestion?: string; waitingInteractions?: unknown[] } }
   | { type: "SET_DAG_EXECUTION"; payload: DAGExecution | null }
   | { type: "ADD_STEP"; payload: StepExecution }
   | { type: "UPDATE_STEP"; payload: { stepId: string; updates: Partial<StepExecution> } }
@@ -317,6 +369,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, currentTask: action.payload }
 
     case "UPDATE_TASK_STATUS":
+      const isWaitingForUser = action.payload.status === "waiting_for_user"
       return state.currentTask
         ? {
           ...state,
@@ -324,6 +377,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
             ...state.currentTask,
             status: action.payload.status,
             updatedAt: new Date().toISOString(),
+            waitingQuestion: isWaitingForUser
+              ? action.payload.waitingQuestion ?? state.currentTask.waitingQuestion
+              : undefined,
+            waitingInteractions: isWaitingForUser
+              ? action.payload.waitingInteractions ?? state.currentTask.waitingInteractions
+              : undefined,
           },
         }
         : state
@@ -737,6 +796,10 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               }
             })
           } else if (eventType === "dag_execution") {
+            const steps = stepsFromPlanData(eventData, currentState.steps)
+            if (steps) {
+              dispatch({ type: "SET_STEPS", payload: steps })
+            }
             dispatch({ type: "SET_DAG_EXECUTION", payload: eventData })
           } else if (eventType === "dag_step_info") {
             const stepInfo = eventData
@@ -834,6 +897,29 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             console.log('✅ User message dispatched successfully')
           }
 
+          // Agent-to-user messages, including ask_user_question prompts.
+          else if (eventType === "agent_message") {
+            const messageContent = eventData.message || eventData.content || ""
+            if (!messageContent) {
+              return
+            }
+            const expectsResponse = eventData.expect_response === true || eventData.message_type === "question"
+            if (!expectsResponse) {
+              return
+            }
+            dispatch({
+              type: "ADD_MESSAGE",
+              payload: {
+                id: generateMessageId("msg-agent"),
+                role: "assistant",
+                content: messageContent,
+                timestamp: message.timestamp,
+                status: "running",
+                isResult: true,
+              }
+            })
+          }
+
           // DAG Plan Events - Manage state only, do not display messages (displayed by skill selection events)
           else if (eventType === "dag_plan_start") {
             const phase = eventData.phase || "planning"
@@ -854,33 +940,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             const planData = eventData.plan_data || {}
 
             // Process step data in the plan, including dependencies
-            if (planData.steps && Array.isArray(planData.steps)) {
-              // Get existing steps to preserve timing information
-              const existingSteps = currentState.steps
-              const existingStepsMap = new Map<string, StepExecution>()
-              existingSteps.forEach(step => existingStepsMap.set(step.id, step))
-
-              const steps: StepExecution[] = planData.steps.map((step: any) => {
-                const existingStep = existingStepsMap.get(step.id)
-                return {
-                  id: step.id,
-                  name: step.name || step.id,
-                  description: step.description || "",
-                  // Prioritize existing step status, otherwise use status from plan
-                  status: existingStep?.status || step.status || "pending",
-                  tool_names: step.tool_name ? [step.tool_name] : step.tool_names || [],
-                  dependencies: step.dependencies || [],
-                  // Prioritize existing step timing information
-                  started_at: existingStep?.started_at || step.started_at,
-                  completed_at: existingStep?.completed_at || step.completed_at,
-                  result_data: step.result_data,
-                  step_data: step.step_data,
-                  file_outputs: step.file_outputs || [],
-                  conditional_branches: step.conditional_branches || {},
-                  required_branch: step.required_branch || null,
-                  is_conditional: step.is_conditional || false,
-                }
-              })
+            const steps = stepsFromPlanData(planData, currentState.steps)
+            if (steps) {
               dispatch({ type: "SET_STEPS", payload: steps })
             }
 
@@ -1103,7 +1164,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               description: eventData.description || "",
               status: "running",
               tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
-              dependencies: existingStep?.dependencies || [],
+              dependencies: eventData.dependencies || existingStep?.dependencies || [],
               started_at: eventData.started_at || message.timestamp,
               completed_at: eventData.completed_at,
               result_data: eventData.result_data,
@@ -1133,19 +1194,22 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
           } else if (eventType === "dag_step_end") {
             const stepName = eventData.step_name || eventData.name || eventData.title || `${t('agent.logs.event.messages.execStepPrefix')}${eventData.step_id || t('common.errors.unknown')}`
             console.log('✅ dag_step_end:', stepName, JSON.stringify(message))
+            const resultData = eventData.result_data ?? eventData.result
 
             // dag_step_end has step_id, should update right panel step data, do not display message in left panel
+            const stepId = message.step_id || eventData.step_id || stepName
+            const existingStep = state.steps.find(s => s.id === stepId)
             const step: StepExecution = {
-              id: message.step_id || eventData.step_id || stepName,
+              id: stepId,
               name: stepName,
               description: eventData.description || "",
               status: eventData.status || "completed",
               tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
-              dependencies: [],
+              dependencies: eventData.dependencies || existingStep?.dependencies || [],
               // Don't override started_at from end event to preserve the original start time
               started_at: undefined, // Let the reducer handle preserving existing started_at
               completed_at: eventData.completed_at || message.timestamp,
-              result_data: eventData.result_data,
+              result_data: resultData,
               step_data: eventData.step_data,
               file_outputs: eventData.file_outputs || [],
               conditional_branches: eventData.conditional_branches || {},
@@ -1166,7 +1230,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
                 completed_at: eventData.completed_at || message.timestamp,
-                result_data: eventData.result_data,
+                result: resultData,
+                result_data: resultData,
                 step_data: eventData.step_data,
                 file_outputs: eventData.file_outputs || [],
               }
@@ -1668,10 +1733,23 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             } else {
               resultData = { output: result }
             }
+            if (
+              resultData
+              && typeof resultData === 'object'
+              && (resultData as any).content
+              && !(resultData as any).output
+            ) {
+              const content = (resultData as any).content
+              resultData = {
+                ...resultData,
+                output: typeof content === "string" ? unwrapFinalAnswerContent(content) : content,
+              }
+            }
 
             // 1. Output meta info (exclude output, file_outputs and history)
             const metaInfo = { ...resultData }
             delete (metaInfo as any).output
+            delete (metaInfo as any).content
             delete (metaInfo as any).file_outputs
             delete (metaInfo as any).history
             const hasMetaInfo = Object.keys(metaInfo).length > 0 && metaInfo !== null && metaInfo !== undefined
@@ -2008,7 +2086,10 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               payload: {
                 id: generateMessageId("msg-ai"),
                 role: "assistant",
-                content: eventData.content || "",
+                content:
+                  typeof eventData.content === "string"
+                    ? unwrapFinalAnswerContent(eventData.content)
+                    : eventData.content || "",
                 timestamp: message.timestamp,
                 status: "completed",
               }
@@ -2867,6 +2948,10 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         break
 
       case "dag_execution":
+        const dagSteps = stepsFromPlanData(message.data, state.steps)
+        if (dagSteps) {
+          dispatch({ type: "SET_STEPS", payload: dagSteps })
+        }
         dispatch({ type: "SET_DAG_EXECUTION", payload: message.data as DAGExecution })
         break
 
@@ -2874,6 +2959,39 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
       case "task_paused":
         console.trace('Original message:', JSON.stringify(message), 'Handler: handleMessage (task_paused)')
         dispatch({ type: "UPDATE_TASK_STATUS", payload: { status: "paused" } })
+        break
+
+      case "task_waiting_for_user":
+        console.trace('Original message:', JSON.stringify(message), 'Handler: handleMessage (task_waiting_for_user)')
+        const waitingData = message.data as { question?: string; message?: string; interactions?: unknown[] }
+        const waitingMessage = waitingData?.question || waitingData?.message || ""
+        const interactions = normalizeInteractions(waitingData?.interactions)
+        dispatch({
+          type: "UPDATE_TASK_STATUS",
+          payload: {
+            status: "waiting_for_user",
+            waitingQuestion: waitingMessage && waitingMessage !== "Task waiting for user response" ? waitingMessage : undefined,
+            waitingInteractions: interactions.length > 0 ? interactions : undefined,
+          }
+        })
+        if (
+          waitingMessage &&
+          waitingMessage !== "Task waiting for user response" &&
+          !isDuplicateMessage(waitingMessage, 'agent-message')
+        ) {
+          dispatch({
+            type: "ADD_MESSAGE",
+            payload: {
+              id: generateMessageId("msg-agent"),
+              role: "assistant",
+              content: waitingMessage,
+              timestamp: message.timestamp,
+              status: "running",
+              isResult: true,
+              interactions: interactions.length > 0 ? interactions : undefined,
+            }
+          })
+        }
         break
 
       case "task_resumed":
@@ -2962,16 +3080,18 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         // For task mode, message is user input
         const taskDescription = message
         const taskTitle = message.length > 50 ? `${message.substring(0, 50)}...` : message
-        const executionMode = config?.executionMode?.mode || (config?.agentId ? "balanced" : "think")
+        const executionMode = config?.executionMode?.mode || (config?.agentId ? "balanced" : undefined)
 
         const requestBody: any = {
           title: taskTitle,
           description: taskDescription,
           llm_ids: llmIds,
           memory_similarity_threshold: config?.memorySimilarityThreshold ?? 1.5,
-          execution_mode: executionMode,
           process_description: config?.executionMode?.processDescription,
           examples: config?.executionMode?.examples,
+        }
+        if (executionMode) {
+          requestBody.execution_mode = executionMode
         }
 
         // Upload files first if present
@@ -2982,10 +3102,10 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
           if (filesToUpload.length > 0) {
             const formData = new FormData()
             filesToUpload.forEach(f => formData.append('files', f))
-            formData.append('task_type', executionMode)
+            formData.append('task_type', executionMode ?? 'general')
 
             try {
-              const uploadResponse = await apiRequest(`${apiUrl}/api/files/upload`, {
+              const uploadResponse = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
                 method: 'POST',
                 body: formData
               })

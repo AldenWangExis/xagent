@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { apiRequest, getUploadErrorMessage, isJsonRecord, parseApiResponse, UPLOAD_ERROR_MESSAGES } from "@/lib/api-wrapper"
-import { getApiUrl } from "@/lib/utils"
+import { getApiUrl, getUploadApiUrl } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, Bot } from "lucide-react"
 import { useI18n } from "@/contexts/i18n-context"
@@ -95,7 +95,7 @@ export default function AgentChatPage() {
         formData.append('task_type', 'task')
 
         try {
-          const uploadResponse = await apiRequest(`${getApiUrl()}/api/files/upload`, {
+          const uploadResponse = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
             method: 'POST',
             body: formData
           })

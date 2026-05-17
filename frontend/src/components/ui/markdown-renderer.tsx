@@ -7,6 +7,7 @@ import type { Components } from 'react-markdown'
 import { getApiUrl } from '@/lib/utils'
 import { apiRequest } from '@/lib/api-wrapper'
 import { AgentCard } from '@/components/chat/AgentCard'
+import { useI18n } from '@/contexts/i18n-context'
 
 
 interface AgentInfo {
@@ -106,6 +107,7 @@ function AgentCardContainer({
   agentName: string
   onAgentClick?: (agentId: string, agentName: string) => void
 }) {
+  const { t } = useI18n()
   const { agentInfo, loading, error } = useAgentInfo(agentId)
 
   // Show loading state
@@ -127,7 +129,7 @@ function AgentCardContainer({
       <AgentCard
         agentId={agentId}
         agentName={initialAgentName}
-        description="无法加载 Agent 详情"
+        description={t("markdownRenderer.loadAgentDetailsFailed")}
         status="draft"
       />
     )
@@ -143,6 +145,20 @@ function AgentCardContainer({
       status={agentInfo.status}
     />
   )
+}
+
+function containsAgentCardElement(children: React.ReactNode): boolean {
+  return React.Children.toArray(children).some((child) => {
+    if (!React.isValidElement(child)) {
+      return false
+    }
+
+    if (child.props?.['data-agent-card-wrapper']) {
+      return true
+    }
+
+    return containsAgentCardElement(child.props?.children)
+  })
 }
 
 
@@ -231,6 +247,17 @@ function MarkdownFileImage({
 export function MarkdownRenderer({ content, className = '', onFileClick, onAgentClick }: MarkdownRendererProps) {
   const components = React.useMemo<Components>(
     () => ({
+      p({ node: _node, children, ...props }) {
+        if (containsAgentCardElement(children)) {
+          return (
+            <div className="my-4" {...props}>
+              {children}
+            </div>
+          )
+        }
+
+        return <p {...props}>{children}</p>
+      },
       a({ node: _node, href, title, children, ...props }) {
         if (href && href.startsWith('file:')) {
           const filePath = href.replace(/^file:/, '')
@@ -274,7 +301,8 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
           // Wrap in div to ensure it appears on its own line
           return React.createElement('div', {
             className: 'my-2',
-            key: `agent-${agentId}-wrapper`
+            key: `agent-${agentId}-wrapper`,
+            'data-agent-card-wrapper': true,
           }, React.createElement(AgentCardContainer, {
             key: `agent-${agentId}`,
             agentId: agentId,
@@ -307,11 +335,11 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
         return <img src={src || ''} alt={alt || ''} title={title || alt || ''} {...props} />
       }
     }),
-    [onFileClick]
+    [onFileClick, onAgentClick]
   )
 
   return (
-    <div className={`prose prose-invert max-w-none ${className}`}>
+    <div className={`prose prose-invert max-w-none break-words [overflow-wrap:anywhere] ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}

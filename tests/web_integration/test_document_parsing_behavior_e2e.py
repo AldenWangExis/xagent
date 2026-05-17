@@ -384,10 +384,9 @@ class TestDocumentTypeDefaultParsing:
                 headers=auth_headers,
             )
 
-        assert response.status_code == 500
+        assert response.status_code == 422
         result = response.json()
-        assert result["status"] == "error"
-        assert "Unsupported file type" in str(result.get("message", ""))
+        assert "Unsupported file type" in result.get("detail", "")
 
 
 # ==========================================

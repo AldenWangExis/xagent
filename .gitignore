@@ -254,3 +254,6 @@ default.yaml
 fenixaos_web.db
 
 .claude/
+
+# Per-developer local frontend env
+frontend/.env.local

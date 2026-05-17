@@ -118,6 +118,21 @@ async def list_knowledge_bases(
         raise RuntimeError(f"Failed to list knowledge bases: {e}") from e
 
 
+async def find_missing_knowledge_bases(
+    knowledge_bases: List[str],
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+) -> List[str]:
+    """Return requested knowledge base names that are not visible to the user."""
+    requested = [name.strip() for name in knowledge_bases if name and name.strip()]
+    if not requested:
+        return []
+
+    result = await list_collections(user_id=user_id, is_admin=is_admin)
+    available = {collection.name for collection in result.collections}
+    return [name for name in requested if name not in available]
+
+
 async def search_knowledge_base(
     tool_args: KnowledgeSearchArgs,
     user_id: Optional[int] = None,

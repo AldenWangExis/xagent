@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Bot, Presentation, BarChart, Image as ImageIcon, Zap, Search, Smartphone, Wand2 } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { Bot, Presentation, Search, Smartphone, Wand2 } from "lucide-react";
 import { useI18n } from "@/contexts/i18n-context";
 import { useApp } from "@/contexts/app-context-chat";
 import { ChatStartScreen, AgentCard } from "@/components/chat/ChatStartScreen";
@@ -9,15 +9,22 @@ import { FilePreviewDialog } from "@/components/file/file-preview-dialog";
 import { getBrandingFromEnv } from "@/lib/branding";
 import { apiRequest } from "@/lib/api-wrapper";
 import { getApiUrl } from "@/lib/utils";
+import { useSearchParams } from "next/navigation";
 
 function TaskHomePageContent() {
   const { t } = useI18n();
   const { sendMessage, state, dispatch, closeFilePreview } = useApp();
+  const searchParams = useSearchParams();
+  const starter = searchParams.get("starter");
+  const promptFromQuery = searchParams.get("prompt");
+
   const [files, setFiles] = useState<File[]>([]);
-  const [inputValue, setInputValue] = useState("");
-  const [promptHighlightTerms, setPromptHighlightTerms] = useState<string[]>([]);
   const [agents, setAgents] = useState<AgentCard[]>([]);
   const [selectedAgents, setSelectedAgents] = useState<AgentCard[]>([]);
+  const [selectedAgentConfig, setSelectedAgentConfig] = useState<{
+    model?: string;
+    executionMode?: "flash" | "balanced" | "think";
+  }>();
   const branding = getBrandingFromEnv();
 
   // Clear state on mount to ensure we are in "new task" mode
@@ -50,51 +57,123 @@ function TaskHomePageContent() {
     fetchAgents();
   }, []);
 
-  const samplePrompts = [
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchSelectedAgentConfig = async () => {
+      const selectedAgentId = Number(selectedAgents[0]?.id);
+      if (Number.isNaN(selectedAgentId)) {
+        setSelectedAgentConfig(undefined);
+        return;
+      }
+
+      try {
+        const response = await apiRequest(`${getApiUrl()}/api/agents/${selectedAgentId}`);
+        if (!response.ok) {
+          if (!cancelled) {
+            setSelectedAgentConfig(undefined);
+          }
+          return;
+        }
+
+        const data = await response.json();
+        if (!cancelled) {
+          setSelectedAgentConfig({
+            model: data?.models?.general,
+            executionMode: data?.execution_mode,
+          });
+        }
+      } catch (error) {
+        console.error("Failed to fetch selected agent config:", error);
+        if (!cancelled) {
+          setSelectedAgentConfig(undefined);
+        }
+      }
+    };
+
+    fetchSelectedAgentConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAgents]);
+
+  const samplePrompts = useMemo(() => ([
     {
+      id: "research",
       icon: Search,
       title: t("chatPage.cards.research.title"),
       prompt: "Research topic and deliver a structured report with key findings, data points, and sources.",
       promptHighlights: ["topic"],
     },
     {
+      id: "linkedin",
       icon: Smartphone,
       title: t("chatPage.cards.linkedin.title"),
       prompt: "Write a LinkedIn post about topic or achievement. Tone: professional / inspirational.",
       promptHighlights: ["topic or achievement", "professional / inspirational"],
     },
     {
+      id: "poster",
       icon: Wand2,
       title: t("chatPage.cards.poster.title"),
       prompt: "Create a promotional poster for event or product. Style: modern / bold / minimal.",
       promptHighlights: ["event or product", "modern / bold / minimal"],
     },
     {
+      id: "compare",
       icon: Search,
       title: t("chatPage.cards.compare.title"),
       prompt: "Compare product A vs product B across key criteria. Provide a detailed analysis with a recommendation.",
       promptHighlights: ["product A", "product B", "key criteria"],
     },
     {
+      id: "visual",
       icon: Wand2,
       title: t("chatPage.cards.visual.title"),
       prompt: "Create a platform graphic for campaign or brand. Size: square / story / banner. Theme: colour or style.",
       promptHighlights: ["platform", "campaign or brand", "square / story / banner", "colour or style"],
     },
     {
+      id: "presentation",
       icon: Presentation,
       title: t("chatPage.cards.presentation.title"),
       prompt: "Build a N-slide presentation on topic for audience.",
       promptHighlights: ["N", "topic", "audience"],
     }
-  ];
+  ]), [t]);
+
+  const starterPreset = useMemo(() => {
+    const found = samplePrompts.find((prompt) => prompt.id === starter);
+    if (!found) return null;
+
+    return {
+      prompt: found.prompt,
+      highlights: found.promptHighlights,
+    };
+  }, [starter, samplePrompts]);
+
+  const queryInputValue = starterPreset?.prompt || promptFromQuery || "";
+  const queryPromptHighlightTerms = useMemo(
+    () => starterPreset?.highlights || [],
+    [starterPreset]
+  );
+
+  const [inputValue, setInputValue] = useState(() => queryInputValue);
+  const [promptHighlightTerms, setPromptHighlightTerms] = useState<string[]>(() => queryPromptHighlightTerms);
+
+  useEffect(() => {
+    setInputValue(queryInputValue);
+    setPromptHighlightTerms(queryPromptHighlightTerms);
+  }, [queryInputValue, queryPromptHighlightTerms]);
 
   const handleSend = async (message: string, filesToSend: File[], config?: any) => {
     if (state.isProcessing) return;
 
+    const selectedAgentId = Number(selectedAgents[0]?.id);
     const nextConfig = {
       ...config,
-      delegateAgentIds: selectedAgents.map((agent) => Number(agent.id)).filter((id) => !Number.isNaN(id)),
+      agentId: Number.isNaN(selectedAgentId) ? undefined : selectedAgentId,
     };
 
     // Use sendMessage from AppContext - it will create task and send files via WebSocket
@@ -151,6 +230,8 @@ function TaskHomePageContent() {
             onInputChange={handleInputChange}
             onPromptSelect={handlePromptSelect}
             promptHighlightTerms={promptHighlightTerms}
+            readOnlyConfig={selectedAgents.length > 0}
+            taskConfig={selectedAgents.length > 0 ? selectedAgentConfig : undefined}
             showModeToggle={true}
             autoFocus={true}
             inputMinHeightClass="min-h-[200px]"

@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { SearchInput } from "@/components/ui/search-input"
 import { Button } from "@/components/ui/button"
 import { Plus, Bot, Trash2, MessageSquare, Edit, MoreVertical, Globe, Calendar, Clock, Rocket, Sparkles, Settings2, ArrowRight, FileText, Wrench, Database, Plug } from "lucide-react"
@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { DeployAgentDialog, Agent } from "@/components/build/deploy-agent-dialog"
 import { FeatureEmptyState } from "@/components/ui/feature-empty-state"
 import { useI18n } from "@/contexts/i18n-context"
+import { useApp } from "@/contexts/app-context-chat"
 import { useRouter, useSearchParams } from "next/navigation"
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl } from "@/lib/utils"
@@ -17,10 +18,49 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { toast } from "sonner"
 import { getBrandingFromEnv } from "@/lib/branding"
 
+interface LlmModel {
+  model_id: string
+  is_default?: boolean
+}
+
+interface DefaultModelRecord {
+  config_type?: "general" | "small_fast" | "visual" | "compact"
+  model?: {
+    model_id?: string
+  } | null
+}
+
+interface TaskCreateResponse {
+  task_id: number
+}
+
+const isLlmModel = (value: unknown): value is LlmModel => {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate.model_id === "string" &&
+    (candidate.is_default === undefined || typeof candidate.is_default === "boolean")
+  )
+}
+
+const isTaskCreateResponse = (value: unknown): value is TaskCreateResponse => {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+  return typeof candidate.task_id === "number"
+}
+
 export default function BuildsPage() {
   const { t } = useI18n()
+  const { dispatch, setTaskId, setPendingMessage } = useApp()
   const router = useRouter()
   const searchParams = useSearchParams()
+  const hasAutoOpenedCreateRef = useRef(false)
   const [searchTerm, setSearchTerm] = useState("")
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
@@ -36,6 +76,18 @@ export default function BuildsPage() {
       // Redirect to create page with template parameter
       router.replace(`/build/new?template=${templateId}`)
     }
+  }, [searchParams, router])
+
+  useEffect(() => {
+    const shouldOpenCreate = searchParams.get("create") === "true"
+    if (!shouldOpenCreate) {
+      hasAutoOpenedCreateRef.current = false
+      return
+    }
+    if (hasAutoOpenedCreateRef.current) return
+    hasAutoOpenedCreateRef.current = true
+    setIsCreateModalOpen(true)
+    router.replace("/build")
   }, [searchParams, router])
 
   // Fetch agents on mount
@@ -122,18 +174,107 @@ export default function BuildsPage() {
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [createPrompt, setCreatePrompt] = useState("")
+  const [isStartingTask, setIsStartingTask] = useState(false)
 
   const handleCreate = () => {
     setIsCreateModalOpen(true)
   }
 
-  const handleBuildWithPrompt = () => {
-    if (createPrompt.trim()) {
-      router.push(`/build/new?prompt=${encodeURIComponent(createPrompt.trim())}`)
-    } else {
-      router.push("/build/new")
+  const resolveTaskLlmIds = async (): Promise<[string, string | null, string | null, string | null] | null> => {
+    const apiUrl = getApiUrl()
+    const [modelsResponse, defaultResponse] = await Promise.all([
+      apiRequest(`${apiUrl}/api/models/?category=llm`, { headers: {} }),
+      apiRequest(`${apiUrl}/api/models/user-default`, { headers: {} }),
+    ])
+
+    let allModels: LlmModel[] = []
+    if (modelsResponse.ok) {
+      const modelsData = await modelsResponse.json()
+      if (Array.isArray(modelsData)) {
+        allModels = modelsData.filter(isLlmModel)
+      }
     }
-    setIsCreateModalOpen(false)
+
+    const defaultModels: Record<string, string | undefined> = {}
+    if (defaultResponse.ok) {
+      const defaultsData = await defaultResponse.json()
+      if (Array.isArray(defaultsData)) {
+        defaultsData.forEach((defaultConfig: DefaultModelRecord) => {
+          if (defaultConfig?.config_type && defaultConfig.model?.model_id) {
+            defaultModels[defaultConfig.config_type] = defaultConfig.model.model_id
+          }
+        })
+      }
+    }
+
+    const generalModelId =
+      defaultModels.general ||
+      allModels.find((model) => model.is_default)?.model_id ||
+      allModels[0]?.model_id
+
+    if (!generalModelId) {
+      return null
+    }
+
+    return [
+      generalModelId,
+      defaultModels.small_fast ?? null,
+      defaultModels.visual ?? null,
+      defaultModels.compact ?? null,
+    ]
+  }
+
+  const handleBuildWithPrompt = async () => {
+    const prompt = createPrompt.trim()
+    if (!prompt || isStartingTask) return
+
+    setIsStartingTask(true)
+    try {
+      dispatch({ type: "RESET_STATE" })
+      const llmIds = await resolveTaskLlmIds()
+      if (!llmIds) {
+        toast.error(t("chatPage.input.noModelAlert"))
+        return
+      }
+
+      const taskResponse = await apiRequest(`${getApiUrl()}/api/chat/task/create`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: prompt,
+          description: prompt,
+          llm_ids: llmIds,
+        }),
+      })
+
+      if (!taskResponse.ok) {
+        throw new Error("Failed to create task")
+      }
+
+      const taskData = await taskResponse.json()
+      if (!isTaskCreateResponse(taskData)) {
+        throw new Error("Task create response is missing task_id")
+      }
+
+      setPendingMessage({
+        message: prompt,
+        files: [],
+        targetTaskId: taskData.task_id,
+      })
+      dispatch({ type: "TRIGGER_TASK_UPDATE" })
+      setTaskId(taskData.task_id)
+      setIsCreateModalOpen(false)
+      setCreatePrompt("")
+    } catch (error) {
+      console.error("Failed to start task from build modal:", error)
+      toast.error(t("builds.list.createModal.startTaskFailed"))
+      setIsCreateModalOpen(true)
+      setCreatePrompt(prompt)
+    } finally {
+      setIsStartingTask(false)
+    }
   }
 
   const handleManualCreate = () => {
@@ -149,27 +290,27 @@ export default function BuildsPage() {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <div className="flex justify-between items-center p-8">
-        <div>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-4 md:px-8 py-6 md:py-8 gap-4">
+        <div className="w-full sm:w-auto">
           <h1 className="text-3xl font-bold mb-1">{t("builds.list.header.title")}</h1>
           <p className="text-muted-foreground">{t("builds.list.header.description")}</p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 w-full sm:w-auto">
           <SearchInput
             placeholder={t("builds.list.search.placeholder")}
             value={searchTerm}
             onChange={setSearchTerm}
-            containerClassName="w-64"
+            containerClassName="flex-1 sm:w-64"
           />
-          <Button onClick={handleCreate}>
-            <Plus className="mr-2 h-4 w-4" />
-            {t("builds.list.header.create")}
+          <Button onClick={handleCreate} className="shrink-0 flex items-center gap-1 sm:gap-2">
+            <Plus className="h-4 w-4 sm:mr-2" />
+            <span className="hidden sm:inline">{t("builds.list.header.create")}</span>
           </Button>
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 px-6 pb-6 space-y-6 overflow-auto">
+      <div className="flex-1 px-4 md:px-6 pb-6 space-y-6 overflow-auto">
         {/* Loading State */}
         {loading ? (
           <div className="flex items-center justify-center h-[400px]">
@@ -385,10 +526,10 @@ export default function BuildsPage() {
 
       <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
         <DialogContent className="sm:max-w-[550px] gap-0 p-0 overflow-hidden bg-background shadow-lg rounded-xl">
-          <DialogHeader className="px-6 py-5 border-b">
-            <DialogTitle className="flex items-center gap-2 text-xl font-semibold">
-              <Bot className="h-6 w-6" />
-              {t("builds.list.createModal.title")}
+          <DialogHeader className="px-6 py-5 border-b pr-10">
+            <DialogTitle className="flex items-start sm:items-center gap-2 text-xl font-semibold">
+              <Bot className="h-6 w-6 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="leading-tight text-left">{t("builds.list.createModal.title")}</span>
             </DialogTitle>
           </DialogHeader>
 
@@ -409,27 +550,27 @@ export default function BuildsPage() {
                 </div>
               </div>
 
-              <div className="relative rounded-lg border border-input bg-background focus-within:ring-1 focus-within:ring-ring">
+              <div className="relative flex-1 w-full rounded-lg border border-input bg-background focus-within:ring-1 focus-within:ring-ring flex flex-col">
                 <Textarea
                   value={createPrompt}
                   onChange={(e) => setCreatePrompt(e.target.value)}
                   placeholder={t("builds.list.createModal.placeholder")}
-                  className="min-h-[120px] resize-none border-0 shadow-none focus-visible:ring-0 pb-14"
+                  className="min-h-[100px] flex-1 resize-none border-0 shadow-none focus-visible:ring-0"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !isStartingTask) {
                       e.preventDefault()
                       handleBuildWithPrompt()
                     }
                   }}
                 />
-                <div className="absolute bottom-2 right-2">
+                <div className="p-2 flex justify-end">
                   <Button
                     onClick={handleBuildWithPrompt}
-                    disabled={!createPrompt.trim()}
-                    className="bg-indigo-400 hover:bg-indigo-500 text-white shadow-none"
+                    disabled={!createPrompt.trim() || isStartingTask}
+                    className="bg-indigo-400 hover:bg-indigo-500 text-white shadow-none shrink-0"
                   >
                     <Sparkles className="mr-2 h-4 w-4" />
-                    {t("builds.list.createModal.buildBtn")}
+                    {isStartingTask ? t("common.loading") : t("builds.list.createModal.buildBtn")}
                   </Button>
                 </div>
               </div>

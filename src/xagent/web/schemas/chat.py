@@ -51,7 +51,6 @@ class TaskCreateRequest(BaseModel):
     title: str
     description: Optional[str] = None
     agent_id: Optional[int] = None  # Agent Builder agent ID
-    delegate_agent_ids: Optional[List[int]] = None  # Delegable agent IDs for task
     files: Optional[List[str]] = None  # List of filenames to associate with the task
     llm_ids: Optional[List[Optional[str]]] = (
         None  # Model identifiers to use: exactly 4 elements in order [default, fast_small, vision, compact]
@@ -59,11 +58,11 @@ class TaskCreateRequest(BaseModel):
     memory_similarity_threshold: Optional[float] = (
         1.5  # Memory search similarity threshold
     )
-    agent_type: Optional[str] = "standard"  # Agent type: "standard", "text2sql", etc.
+    agent_type: Optional[str] = "standard"
     agent_config: Optional[Dict[str, Any]] = None  # Agent-specific configuration
 
     # Execution mode field
-    execution_mode: Optional[str] = None  # "flash", "balanced", or "think"
+    execution_mode: Optional[str] = None  # "flash", "balanced", "think", or "auto"
     process_description: Optional[str] = (
         None  # Process mode: detailed process description (deprecated)
     )
