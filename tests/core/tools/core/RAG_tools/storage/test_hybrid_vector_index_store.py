@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+from xagent.core.tools.core.RAG_tools.storage.contracts import VectorIndexStore
 
 
 def test_upsert_embeddings_uses_milvus_delegate() -> None:
@@ -24,6 +25,46 @@ def test_upsert_embeddings_uses_milvus_delegate() -> None:
 
     milvus_store.upsert_embeddings.assert_called_once_with("text-embedding-v4", rows)
     lancedb_store.upsert_embeddings.assert_not_called()
+
+
+def test_hybrid_store_is_vector_contract_instance() -> None:
+    from xagent.core.tools.core.RAG_tools.storage.hybrid_vector_index_store import (
+        HybridVectorIndexStore,
+    )
+
+    hybrid = HybridVectorIndexStore(lancedb_store=Mock(), milvus_embedding_store=Mock())
+
+    assert isinstance(hybrid, VectorIndexStore)
+
+
+@pytest.mark.asyncio
+async def test_upsert_embeddings_async_uses_to_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xagent.core.tools.core.RAG_tools.storage import hybrid_vector_index_store as module
+    from xagent.core.tools.core.RAG_tools.storage.hybrid_vector_index_store import (
+        HybridVectorIndexStore,
+    )
+
+    lancedb_store = Mock()
+    milvus_store = Mock()
+    to_thread_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(module.asyncio, "to_thread", to_thread_mock)
+
+    hybrid = HybridVectorIndexStore(
+        lancedb_store=lancedb_store,
+        milvus_embedding_store=milvus_store,
+    )
+    rows = [{"doc_id": "doc-1", "chunk_id": "chunk-1", "vector": [0.1, 0.2]}]
+
+    await hybrid.upsert_embeddings_async("text-embedding-v4", rows)
+
+    to_thread_mock.assert_awaited_once()
+    func, model_tag, passed_rows = to_thread_mock.call_args.args
+    assert func is milvus_store.upsert_embeddings
+    assert model_tag == "text-embedding-v4"
+    assert passed_rows == rows
+    milvus_store.upsert_embeddings.assert_not_called()
 
 
 def test_create_index_uses_milvus_delegate() -> None:

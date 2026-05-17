@@ -6,17 +6,19 @@ documents/parses/chunks and other control-plane related tables.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Any, Dict, Optional
 
+from .contracts import FilterExpression, IndexPolicy, VectorIndexStore
 from .lancedb_stores import LanceDBVectorIndexStore
 from .milvus_embedding_store import MilvusEmbeddingIndexStore
 
 logger = logging.getLogger(__name__)
 
 
-class HybridVectorIndexStore:
+class HybridVectorIndexStore(VectorIndexStore):
     """Delegate non-vector tables to LanceDB, embeddings to Milvus."""
 
     def __init__(
@@ -43,7 +45,7 @@ class HybridVectorIndexStore:
     async def upsert_embeddings_async(
         self, model_tag: str, records: list[dict[str, Any]]
     ) -> None:
-        self._milvus.upsert_embeddings(model_tag, records)
+        await asyncio.to_thread(self._milvus.upsert_embeddings, model_tag, records)
 
     def create_index(self, model_tag: str, readonly: bool = False):
         return self._milvus.create_index(model_tag, readonly)
@@ -384,3 +386,149 @@ class HybridVectorIndexStore:
             user_id=user_id,
             is_admin=is_admin,
         )
+
+    # ---- Explicit VectorIndexStore contract delegation methods ----
+    # Keep LanceDB as the default control-plane delegate.
+
+    def list_document_records(
+        self,
+        collection_name: Optional[str],
+        user_id: Optional[int],
+        is_admin: bool,
+        max_results: int,
+    ):
+        return self._lancedb.list_document_records(
+            collection_name=collection_name,
+            user_id=user_id,
+            is_admin=is_admin,
+            max_results=max_results,
+        )
+
+    def count_documents_grouped_by_collection(
+        self,
+        collection_names: Sequence[str],
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, int]:
+        return self._lancedb.count_documents_grouped_by_collection(
+            collection_names=collection_names,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    def delete_document_data(
+        self,
+        collection_name: str,
+        doc_id: str,
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, int]:
+        return self._lancedb.delete_document_data(
+            collection_name=collection_name,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    def aggregate_document_counts(
+        self,
+        table_name: str,
+        doc_id_column: str,
+        collection_name: str,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> Dict[str, int]:
+        return self._lancedb.aggregate_document_counts(
+            table_name=table_name,
+            doc_id_column=doc_id_column,
+            collection_name=collection_name,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    def build_filter_expression(
+        self,
+        filters: Optional[FilterExpression],
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> Optional[str]:
+        return self._lancedb.build_filter_expression(
+            filters=filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    def upsert_documents(self, records: list[dict[str, Any]]) -> None:
+        self._lancedb.upsert_documents(records)
+
+    def upsert_parses(self, records: list[dict[str, Any]]) -> None:
+        self._lancedb.upsert_parses(records)
+
+    def upsert_chunks(self, records: list[dict[str, Any]]) -> None:
+        self._lancedb.upsert_chunks(records)
+
+    async def upsert_documents_async(self, records: list[dict[str, Any]]) -> None:
+        await self._lancedb.upsert_documents_async(records)
+
+    async def upsert_chunks_async(self, records: list[dict[str, Any]]) -> None:
+        await self._lancedb.upsert_chunks_async(records)
+
+    async def search_fts_async(
+        self,
+        table_name: str,
+        query_text: str,
+        *,
+        top_k: int,
+        filters=None,
+        text_column_name: str = "text",
+    ) -> list[dict[str, Any]]:
+        return await self._lancedb.search_fts_async(
+            table_name=table_name,
+            query_text=query_text,
+            top_k=top_k,
+            filters=filters,
+            text_column_name=text_column_name,
+        )
+
+    def should_reindex(
+        self,
+        table_name: str,
+        total_upserted: int,
+        policy: IndexPolicy,
+    ) -> bool:
+        return self._lancedb.should_reindex(
+            table_name=table_name,
+            total_upserted=total_upserted,
+            policy=policy,
+        )
+
+    def trigger_reindex(self, table_name: str) -> bool:
+        return self._lancedb.trigger_reindex(table_name)
+
+    async def should_reindex_async(
+        self,
+        table_name: str,
+        total_upserted: int,
+        policy: IndexPolicy,
+    ) -> bool:
+        return await self._lancedb.should_reindex_async(
+            table_name=table_name,
+            total_upserted=total_upserted,
+            policy=policy,
+        )
+
+    async def trigger_reindex_async(self, table_name: str) -> bool:
+        return await self._lancedb.trigger_reindex_async(table_name)
+
+    def migrate_embeddings_table(
+        self,
+        model_id: str,
+        batch_size: int = 1000,
+    ) -> dict[str, Any]:
+        return self._lancedb.migrate_embeddings_table(
+            model_id=model_id,
+            batch_size=batch_size,
+        )
+
+    def get_raw_connection(self) -> Any:
+        return self._lancedb.get_raw_connection()
