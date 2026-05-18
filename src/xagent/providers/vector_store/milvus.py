@@ -161,7 +161,9 @@ class MilvusVectorStore(VectorStore):
             return f'"{escaped}"'
         return None
 
-    def _build_filter_expression(self, filters: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _build_filter_expression(
+        self, filters: Optional[Dict[str, Any]]
+    ) -> Optional[str]:
         if not filters:
             return None
 
@@ -282,7 +284,9 @@ class MilvusVectorStore(VectorStore):
         except Exception as exc:
             if not filter_expr:
                 raise
-            logger.warning("Milvus filter pushdown failed, fallback to client filtering: %s", exc)
+            logger.warning(
+                "Milvus filter pushdown failed, fallback to client filtering: %s", exc
+            )
             raw = self._client.search(
                 collection_name=self._collection_name,
                 data=[query_vector],

@@ -32,9 +32,14 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List
 
 import pytest
+
+if TYPE_CHECKING:
+    from xagent.core.tools.core.RAG_tools.storage.milvus_embedding_store import (
+        MilvusEmbeddingIndexStore,
+    )
 
 pytestmark = pytest.mark.milvus
 
@@ -73,12 +78,6 @@ except ImportError:  # pragma: no cover
         "pymilvus is not installed; skipping real-Milvus smoke test.",
         allow_module_level=True,
     )
-
-from xagent.core.tools.core.RAG_tools.storage.milvus_embedding_store import (
-    MilvusEmbeddingIndexStore,
-)
-from xagent.providers.vector_store.milvus import MilvusVectorStore
-
 
 # Use a fresh model_tag per test run so the smoke test does not collide with
 # other developers running against a shared Milvus instance, and it is safe to
@@ -127,6 +126,11 @@ def milvus_client() -> Iterator[Any]:
 @pytest.fixture
 def store() -> MilvusEmbeddingIndexStore:
     """Real ``MilvusEmbeddingIndexStore`` wired against a live Milvus."""
+    from xagent.core.tools.core.RAG_tools.storage.milvus_embedding_store import (
+        MilvusEmbeddingIndexStore,
+    )
+    from xagent.providers.vector_store.milvus import MilvusVectorStore
+
     return MilvusEmbeddingIndexStore(
         uri=_MILVUS_URI,
         token=os.getenv("MILVUS_TOKEN") or None,

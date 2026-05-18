@@ -1502,9 +1502,7 @@ def delete_document(
                 for key, value in milvus_counts.items():
                     counts[key] = counts.get(key, 0) + int(value)
             except Exception as exc:  # noqa: BLE001
-                warning = (
-                    f"Failed to delete Milvus embeddings for '{collection}/{doc_id}': {exc}"
-                )
+                warning = f"Failed to delete Milvus embeddings for '{collection}/{doc_id}': {exc}"
                 logger.warning(warning)
                 warnings.append(warning)
     except Exception as exc:  # noqa: BLE001

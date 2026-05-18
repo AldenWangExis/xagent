@@ -14,13 +14,13 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from typing import Any, Dict, Optional, Sequence
 
-import pyarrow as pa  # type: ignore
+import pyarrow as pa  # type: ignore[import-not-found,unused-ignore]
 
 from xagent.providers.vector_store.milvus import MilvusVectorStore
 
-from ..LanceDB.model_tag_utils import to_model_tag
 from ..core.exceptions import ConfigurationError, DatabaseOperationError
 from ..core.schemas import IndexResult
+from ..LanceDB.model_tag_utils import to_model_tag
 from .contracts import FilterCondition, FilterExpression, FilterOperator
 
 StoreFactory = Callable[..., MilvusVectorStore]
@@ -37,7 +37,8 @@ class MilvusEmbeddingIndexStore:
         db_name: str | None = None,
         store_factory: StoreFactory | None = None,
     ) -> None:
-        resolved_uri = (uri or os.getenv("MILVUS_URI", "")).strip()
+        resolved_uri_raw = uri if uri is not None else os.getenv("MILVUS_URI", "")
+        resolved_uri = resolved_uri_raw.strip()
         if not resolved_uri:
             raise ConfigurationError(
                 "MILVUS_URI must be configured when XAGENT_VECTOR_BACKEND=milvus."
@@ -172,7 +173,9 @@ class MilvusEmbeddingIndexStore:
         if not dims:
             raise ValueError("Embedding records must include non-empty vector values.")
         if len(dims) != 1:
-            raise ValueError(f"Mixed vector dimension payload is not allowed: {sorted(dims)}")
+            raise ValueError(
+                f"Mixed vector dimension payload is not allowed: {sorted(dims)}"
+            )
         return next(iter(dims))
 
     @staticmethod
@@ -210,13 +213,13 @@ class MilvusEmbeddingIndexStore:
             return (lambda row: all(pred(row) for pred in predicates)), True
 
         if isinstance(filters, list):
-            predicates: list[Callable[[dict[str, Any]], bool]] = []
+            or_predicates: list[Callable[[dict[str, Any]], bool]] = []
             for item in filters:
                 predicate, supported = self._compile_filter(item)
                 if not supported:
                     return (lambda _row: False), False
-                predicates.append(predicate)
-            return (lambda row: any(pred(row) for pred in predicates)), True
+                or_predicates.append(predicate)
+            return (lambda row: any(pred(row) for pred in or_predicates)), True
 
         return (lambda _row: False), False
 

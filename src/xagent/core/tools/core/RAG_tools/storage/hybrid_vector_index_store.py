@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any, Dict, Optional
 
-from .contracts import FilterExpression, IndexPolicy, VectorIndexStore
+from ..core.schemas import IndexResult
+from .contracts import DocumentRecord, FilterExpression, IndexPolicy, VectorIndexStore
 from .lancedb_stores import LanceDBVectorIndexStore
 from .milvus_embedding_store import MilvusEmbeddingIndexStore
 
@@ -47,10 +48,10 @@ class HybridVectorIndexStore(VectorIndexStore):
     ) -> None:
         await asyncio.to_thread(self._milvus.upsert_embeddings, model_tag, records)
 
-    def create_index(self, model_tag: str, readonly: bool = False):
+    def create_index(self, model_tag: str, readonly: bool = False) -> IndexResult:
         return self._milvus.create_index(model_tag, readonly)
 
-    def open_embeddings_table(self, model_tag: str):
+    def open_embeddings_table(self, model_tag: str) -> tuple[Any, str]:
         return self._milvus.open_embeddings_table(model_tag)
 
     def get_vector_dimension(self, table_name: str) -> Optional[int]:
@@ -72,7 +73,7 @@ class HybridVectorIndexStore(VectorIndexStore):
         query_vector: list[float],
         *,
         top_k: int,
-        filters=None,
+        filters: Optional[FilterExpression] = None,
         vector_column_name: str = "vector",
         user_id: Optional[int] = None,
         is_admin: bool = False,
@@ -103,7 +104,7 @@ class HybridVectorIndexStore(VectorIndexStore):
         query_vector: list[float],
         *,
         top_k: int,
-        filters=None,
+        filters: Optional[FilterExpression] = None,
         vector_column_name: str = "vector",
         user_id: Optional[int] = None,
         is_admin: bool = False,
@@ -134,7 +135,7 @@ class HybridVectorIndexStore(VectorIndexStore):
         query_vector: list[float],
         *,
         top_k: int,
-        filters=None,
+        filters: Optional[FilterExpression] = None,
         vector_column_name: str = "vector",
         user_id: Optional[int] = None,
         is_admin: bool = False,
@@ -155,7 +156,7 @@ class HybridVectorIndexStore(VectorIndexStore):
         query_vector: list[float],
         *,
         top_k: int,
-        filters=None,
+        filters: Optional[FilterExpression] = None,
         vector_column_name: str = "vector",
         user_id: Optional[int] = None,
         is_admin: bool = False,
@@ -203,7 +204,7 @@ class HybridVectorIndexStore(VectorIndexStore):
         filters: Optional[Dict[str, Any]] = None,
         user_id: Optional[int] = None,
         is_admin: bool = False,
-    ):
+    ) -> Iterator[Any]:
         if self._is_embeddings_table(table_name):
             return self._milvus.iter_batches(
                 table_name=table_name,
@@ -230,7 +231,7 @@ class HybridVectorIndexStore(VectorIndexStore):
         filters: Optional[Dict[str, Any]] = None,
         user_id: Optional[int] = None,
         is_admin: bool = False,
-    ):
+    ) -> Any:
         if self._is_embeddings_table(table_name):
             for batch in self._milvus.iter_batches(
                 table_name=table_name,
@@ -327,7 +328,9 @@ class HybridVectorIndexStore(VectorIndexStore):
         user_id: Optional[int],
         is_admin: bool,
     ) -> dict[str, dict[str, int]]:
-        stats = self._lancedb.aggregate_collection_stats(user_id=user_id, is_admin=is_admin)
+        stats = self._lancedb.aggregate_collection_stats(
+            user_id=user_id, is_admin=is_admin
+        )
         embedding_counts = self._milvus.count_embeddings_by_collection(
             user_id=user_id,
             is_admin=is_admin,
@@ -395,8 +398,8 @@ class HybridVectorIndexStore(VectorIndexStore):
         collection_name: Optional[str],
         user_id: Optional[int],
         is_admin: bool,
-        max_results: int,
-    ):
+        max_results: int = 10000,
+    ) -> list[DocumentRecord]:
         return self._lancedb.list_document_records(
             collection_name=collection_name,
             user_id=user_id,
@@ -479,7 +482,7 @@ class HybridVectorIndexStore(VectorIndexStore):
         query_text: str,
         *,
         top_k: int,
-        filters=None,
+        filters: Optional[FilterExpression] = None,
         text_column_name: str = "text",
     ) -> list[dict[str, Any]]:
         return await self._lancedb.search_fts_async(

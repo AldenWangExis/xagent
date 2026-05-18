@@ -154,7 +154,9 @@ def store(fake_store_factory: tuple[Any, Dict[str, _FakeMilvusVectorStore]]) -> 
     )
 
     factory, _ = fake_store_factory
-    return MilvusEmbeddingIndexStore(uri="http://fake-milvus:19530", store_factory=factory)
+    return MilvusEmbeddingIndexStore(
+        uri="http://fake-milvus:19530", store_factory=factory
+    )
 
 
 def _record(
@@ -213,7 +215,9 @@ def test_create_collection_and_dimension_constraints(
 
 
 def test_upsert_is_idempotent_same_identity(store: Any) -> None:
-    row = _record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2], text="v1")
+    row = _record(
+        collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2], text="v1"
+    )
     store.upsert_embeddings("text-embedding-v4", [row])
     row_v2 = dict(row)
     row_v2["text"] = "v2"
@@ -452,8 +456,20 @@ def test_non_admin_user_filter_is_enforced(store: Any) -> None:
     store.upsert_embeddings(
         "text-embedding-v4",
         [
-            _record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2], user_id=1),
-            _record(collection="kb1", doc_id="d2", chunk_id="c2", vector=[0.1, 0.2], user_id=2),
+            _record(
+                collection="kb1",
+                doc_id="d1",
+                chunk_id="c1",
+                vector=[0.1, 0.2],
+                user_id=1,
+            ),
+            _record(
+                collection="kb1",
+                doc_id="d2",
+                chunk_id="c2",
+                vector=[0.1, 0.2],
+                user_id=2,
+            ),
         ],
     )
     results = store.search_vectors_by_model(
@@ -471,8 +487,20 @@ def test_admin_path_does_not_force_user_filter(store: Any) -> None:
     store.upsert_embeddings(
         "text-embedding-v4",
         [
-            _record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2], user_id=1),
-            _record(collection="kb1", doc_id="d2", chunk_id="c2", vector=[0.1, 0.2], user_id=2),
+            _record(
+                collection="kb1",
+                doc_id="d1",
+                chunk_id="c1",
+                vector=[0.1, 0.2],
+                user_id=1,
+            ),
+            _record(
+                collection="kb1",
+                doc_id="d2",
+                chunk_id="c2",
+                vector=[0.1, 0.2],
+                user_id=2,
+            ),
         ],
     )
     results = store.search_vectors_by_model(
@@ -487,7 +515,15 @@ def test_admin_path_does_not_force_user_filter(store: Any) -> None:
 def test_non_admin_without_user_id_is_fail_closed(store: Any) -> None:
     store.upsert_embeddings(
         "text-embedding-v4",
-        [_record(collection="kb1", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2], user_id=1)],
+        [
+            _record(
+                collection="kb1",
+                doc_id="d1",
+                chunk_id="c1",
+                vector=[0.1, 0.2],
+                user_id=1,
+            )
+        ],
     )
     results = store.search_vectors_by_model(
         "text-embedding-v4",

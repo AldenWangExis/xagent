@@ -41,7 +41,9 @@ def test_hybrid_store_is_vector_contract_instance() -> None:
 async def test_upsert_embeddings_async_uses_to_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from xagent.core.tools.core.RAG_tools.storage import hybrid_vector_index_store as module
+    from xagent.core.tools.core.RAG_tools.storage import (
+        hybrid_vector_index_store as module,
+    )
     from xagent.core.tools.core.RAG_tools.storage.hybrid_vector_index_store import (
         HybridVectorIndexStore,
     )
@@ -155,7 +157,9 @@ def test_delete_collection_data_merges_counts_from_both_delegates() -> None:
         milvus_embedding_store=milvus_store,
     )
 
-    deleted = hybrid.delete_collection_data("kb1", user_id=7, is_admin=False, warnings_out=[])
+    deleted = hybrid.delete_collection_data(
+        "kb1", user_id=7, is_admin=False, warnings_out=[]
+    )
 
     assert deleted == {"documents": 2, "chunks": 4, "embeddings_text_embedding_v4": 3}
     lancedb_store.delete_collection_data.assert_called_once()

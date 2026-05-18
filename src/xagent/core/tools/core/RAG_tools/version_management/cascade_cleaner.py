@@ -590,7 +590,9 @@ def cascade_delete(
 
     if preview_only and not confirm:
         planned = _plan_by_predicates(conn, predicates, model_tag=None)
-        if not any(str(key).startswith("embeddings_") for key in planned) and target in {
+        if not any(
+            str(key).startswith("embeddings_") for key in planned
+        ) and target in {
             "document",
             "collection",
         }:
