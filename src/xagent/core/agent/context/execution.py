@@ -7,6 +7,11 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from ...tools.artifacts import (
+    format_tool_result_for_observation,
+    sanitize_tool_result_for_public_context,
+)
+from ..language import dag_step_language_rules, response_language_rules
 from .components import (
     COMPONENT_LOADERS,
     ExecutionComponent,
@@ -182,13 +187,18 @@ class ExecutionContext:
         memory.snapshot = snapshot
 
     def _format_tool_result(self, tool_name: str, result: Any) -> str:
-        if isinstance(result, dict):
+        if isinstance(result, dict) and isinstance(result.get("artifacts"), list):
+            formatted = format_tool_result_for_observation(tool_name, result)
+        elif isinstance(result, dict):
             formatted = result.get("output", result)
         else:
             formatted = result
         return f"Tool {tool_name} returned: {formatted}"
 
     def _sanitize_tool_result_for_context(self, tool_name: str, result: Any) -> Any:
+        if isinstance(result, dict):
+            return sanitize_tool_result_for_public_context(result)
+
         if tool_name != "read_file" or not isinstance(result, str):
             return result
         if self._looks_like_binary_text(result):
@@ -327,10 +337,21 @@ class ExecutionContext:
             "latest, yesterday, and tomorrow."
         )
 
+    def _current_user_request_text(self) -> str:
+        for message in reversed(self.messages):
+            if message.hidden or message.role != "user":
+                continue
+            if message.metadata.get("response_to_waiting_for_user"):
+                continue
+            content = str(message.content or "").strip()
+            if content:
+                return content
+        return str(self.metadata.get("task") or "").strip()
+
     def _system_context(self) -> str:
         parts = [self._current_time_context()]
         dag_step_id = self.metadata.get("dag_step_id")
-        current_task = str(self.metadata.get("task") or "").strip()
+        current_task = self._current_user_request_text()
         if current_task and not dag_step_id:
             parts.append(
                 "Current user request:\n"
@@ -340,7 +361,8 @@ class ExecutionContext:
                 "resolve references and preserve continuity, but do not re-answer "
                 "previous requests or repeat previous final answers unless the "
                 "current user request explicitly asks to revise, continue, compare, "
-                "or summarize them."
+                "or summarize them.\n\n"
+                f"{response_language_rules()}"
             )
         process_description = str(
             self.metadata.get("process_description") or ""
@@ -394,7 +416,8 @@ class ExecutionContext:
                 f"- Current step dependencies: {dag_dependencies}\n"
                 f"- Suggested tools for this step: {suggested_tools}\n\n"
                 "Only execute the current DAG step. Detailed step boundary rules are "
-                "provided in the latest DAG step instruction message."
+                "provided in the latest DAG step instruction message.\n\n"
+                f"{dag_step_language_rules()}"
             )
         memory_context = self.metadata.get(MEMORY_CONTEXT_METADATA_KEY)
         if memory_context:

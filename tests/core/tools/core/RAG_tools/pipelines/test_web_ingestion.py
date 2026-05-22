@@ -167,9 +167,12 @@ class TestWebIngestionPipeline:
         assert result.documents_created == 0
         # The message must surface the actual failure, not "completed"
         assert "completed" not in result.message.lower()
-        assert result.message.startswith("Web ingestion failed:")
-        assert "https://www.detrack.com" in result.message
-        assert "HTTP 403" in result.message
+        assert (
+            result.message
+            == "Web ingestion failed. The target website is blocking access "
+            "to automated crawlers. Please use a different method to create "
+            "your KB."
+        )
 
     @pytest.mark.asyncio
     async def test_partial_ingestion_failure(self, crawl_config, ingestion_config):
@@ -253,6 +256,168 @@ class TestWebIngestionPipeline:
         assert "Parse failed" in result.message
         assert len(result.failed_urls) == 1
         assert "https://example.com/page2" in result.failed_urls
+
+    @pytest.mark.asyncio
+    async def test_partial_message_is_human_friendly_for_crawler_blocks(
+        self, crawl_config, ingestion_config
+    ):
+        """Partial results should avoid exposing raw 403 crawl errors."""
+        mock_crawl_results = [
+            MagicMock(
+                url="https://example.com/page1",
+                title="Page 1",
+                content_markdown="# Page 1\n\nContent",
+                status="success",
+                depth=0,
+                timestamp=datetime(2025, 1, 1, 12, 0, 0),
+                content_length=30,
+            )
+        ]
+
+        success_result = IngestionResult(
+            status="success",
+            doc_id="doc1",
+            parse_hash="hash1",
+            chunk_count=5,
+            embedding_count=5,
+            vector_count=5,
+            completed_steps=[],
+            failed_step=None,
+            message="Success",
+            warnings=[],
+        )
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=mock_crawl_results)
+            mock_crawler.total_urls_found = 2
+            mock_crawler.failed_urls = {"https://example.com/blocked": "HTTP 403"}
+            mock_crawler_class.return_value = mock_crawler
+
+            with patch(
+                "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.run_document_ingestion",
+                return_value=success_result,
+            ):
+                result = await run_web_ingestion(
+                    collection="test_collection",
+                    crawl_config=crawl_config,
+                    ingestion_config=ingestion_config,
+                )
+
+        assert result.status == "partial"
+        assert "HTTP 403" not in result.message
+        assert "automated crawlers" in result.message
+        assert "different method to create your KB" in result.message
+        assert "https://example.com/blocked" in result.message
+
+    @pytest.mark.asyncio
+    async def test_error_message_checks_all_failures_for_crawler_blocks(
+        self, crawl_config, ingestion_config
+    ):
+        """Crawler block guidance should not depend on the first failure only."""
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=[])
+            mock_crawler.failed_urls = {
+                "https://example.com/missing": "HTTP 404",
+                "https://example.com/blocked": "HTTP 403",
+            }
+            mock_crawler.total_urls_found = 0
+            mock_crawler_class.return_value = mock_crawler
+
+            result = await run_web_ingestion(
+                collection="test_collection",
+                crawl_config=crawl_config,
+                ingestion_config=ingestion_config,
+            )
+
+        assert result.status == "error"
+        assert (
+            result.message
+            == "Web ingestion failed. The target website is blocking access "
+            "to automated crawlers. Please use a different method to create "
+            "your KB."
+        )
+
+    @pytest.mark.asyncio
+    async def test_partial_message_does_not_treat_ingestion_429_as_crawler_block(
+        self, crawl_config, ingestion_config
+    ):
+        """Downstream ingestion failures must not be labeled as site anti-bot blocks."""
+        mock_crawl_results = [
+            MagicMock(
+                url="https://example.com/page1",
+                title="Page 1",
+                content_markdown="# Page 1\n\nContent",
+                status="success",
+                depth=0,
+                timestamp=datetime(2025, 1, 1, 12, 0, 0),
+                content_length=30,
+            ),
+            MagicMock(
+                url="https://example.com/page2",
+                title="Page 2",
+                content_markdown="# Page 2\n\nContent",
+                status="success",
+                depth=0,
+                timestamp=datetime(2025, 1, 1, 12, 0, 0),
+                content_length=30,
+            ),
+        ]
+
+        success_result = IngestionResult(
+            status="success",
+            doc_id="doc1",
+            parse_hash="hash1",
+            chunk_count=5,
+            embedding_count=5,
+            vector_count=5,
+            completed_steps=[],
+            failed_step=None,
+            message="Success",
+            warnings=[],
+        )
+
+        error_result = IngestionResult(
+            status="error",
+            doc_id="doc2",
+            parse_hash="hash2",
+            chunk_count=0,
+            embedding_count=0,
+            vector_count=0,
+            completed_steps=[],
+            failed_step="embed",
+            message="HTTP 429 from embedding API",
+            warnings=[],
+        )
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=mock_crawl_results)
+            mock_crawler.total_urls_found = 2
+            mock_crawler.failed_urls = {}
+            mock_crawler_class.return_value = mock_crawler
+
+            with patch(
+                "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.run_document_ingestion",
+                side_effect=[success_result, error_result],
+            ):
+                result = await run_web_ingestion(
+                    collection="test_collection",
+                    crawl_config=crawl_config,
+                    ingestion_config=ingestion_config,
+                )
+
+        assert result.status == "partial"
+        assert "automated crawlers" not in result.message
+        assert "https://example.com/page2" in result.message
+        assert "HTTP 429 from embedding API" in result.message
 
     @pytest.mark.asyncio
     async def test_empty_crawl_results(self, crawl_config, ingestion_config):

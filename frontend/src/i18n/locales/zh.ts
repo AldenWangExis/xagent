@@ -275,6 +275,11 @@ Build when you need.`
         visual: { title: "视觉模型", description: "理解并处理图像" },
         compact: { title: "长上下文模型", description: "处理长上下文与压缩" },
         embedding: { title: "嵌入模型", description: "生成向量嵌入" },
+        image: { title: "图像生成模型", description: "用于图片生成任务" },
+        image_edit: { title: "图像编辑模型", description: "用于图片编辑与修改" },
+        asr: { title: "语音识别模型", description: "用于语音转文本任务" },
+        tts: { title: "文本转语音模型", description: "用于文本转语音任务" },
+        speech: { title: "语音模型", description: "同时支持语音识别与合成" },
       },
       actions: {
         clearDefault: "清除默认",
@@ -1062,6 +1067,7 @@ Build when you need.`
     previewDialog: {
       buttons: {
         download: "下载",
+        open: "打开",
         openInNewWindow: "新窗口打开",
       },
       loading: "加载文件内容...",
@@ -2939,7 +2945,15 @@ Build when you need.`
       columns: {
         appId: "应用 ID",
         provider: "供应商",
-        transport: "传输协议"
+        transport: "传输协议",
+        connectorVisibility: "连接器展示"
+      },
+      visibility: {
+        visible: "显示",
+        hidden: "隐藏",
+        showSuccess: "应用已显示在连接器弹窗中",
+        hideSuccess: "应用已从连接器弹窗中隐藏",
+        updateFailed: "更新连接器展示状态失败"
       },
       form: {
         appId: "应用 ID (例如 gmail)",
@@ -2948,6 +2962,8 @@ Build when you need.`
         iconUrl: "图标 URL",
         category: "分类",
         transport: "传输协议",
+        visibleInConnector: "在连接器弹窗中显示",
+        visibleInConnectorDescription: "关闭后，该公共应用会从连接器弹窗中完全隐藏，任何用户都无法再看到它。",
         oauthScopes: "OAuth 权限范围 (逗号分隔)",
         launchConfig: "启动配置 (JSON)",
         invalidJson: "launch_config 中存在无效的 JSON"

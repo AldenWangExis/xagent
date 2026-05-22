@@ -63,6 +63,7 @@ class AgentService:
         self.tool_config = tool_config
         self.tracer = tracer or Tracer()
         self._tools_initialized = False
+        self._tool_policy_signature: Any | None = None
         self._is_paused = False
         self._pause_event = None
         self._current_runner = None
@@ -143,7 +144,11 @@ class AgentService:
             if not has_files:
                 raise ValueError("Task cannot be empty or whitespace-only")
         await self._ensure_tools_initialized()
-        return await self._execute_agent_task(task, context, task_id)
+        result = await self._execute_agent_task(task, context, task_id)
+        file_outputs = self.get_output_files()
+        if file_outputs:
+            result["file_outputs"] = file_outputs
+        return result
 
     async def pause_execution(self) -> bool:
         if self._is_paused:
@@ -203,8 +208,11 @@ class AgentService:
     async def post_user_message(
         self,
         execution_id: str,
-        message: str,
+        message: str | None = None,
         *,
+        execution_message: str | None = None,
+        display_message: str | None = None,
+        files: list[dict[str, Any]] | None = None,
         request_interrupt: bool = True,
         reason: str | None = None,
     ) -> bool:
@@ -214,6 +222,9 @@ class AgentService:
             await self._execution_adapter.post_user_message(
                 execution_id,
                 message,
+                execution_message=execution_message,
+                display_message=display_message,
+                files=files,
                 request_interrupt=request_interrupt,
                 reason=reason,
             )
@@ -532,7 +543,7 @@ class AgentService:
             return None
 
     async def _ensure_tools_initialized(self) -> None:
-        if self.tool_config and not self._tools_initialized:
+        if self.tool_config:
             try:
                 from ..tools.adapters.vibe.factory import ToolFactory
 
@@ -542,16 +553,16 @@ class AgentService:
                 ):
                     self.tool_config._workspace_config["task_id"] = self.id
 
+                policy_signature = self._current_tool_policy_signature()
+                if (
+                    self._tools_initialized
+                    and policy_signature == self._tool_policy_signature
+                ):
+                    return
+
+                # Rebuild the tool list so disabled tools disappear from reused agents.
                 new_tools = await ToolFactory.create_all_tools(self.tool_config)
-                existing_tool_names = {
-                    tool.name for tool in self.tools if hasattr(tool, "name")
-                }
-                for tool in new_tools:
-                    if (
-                        not hasattr(tool, "name")
-                        or tool.name not in existing_tool_names
-                    ):
-                        self.tools.append(tool)
+                self.tools = list(new_tools)
 
                 if hasattr(self.tool_config, "get_allowed_tools"):
                     allowed_tools = self.tool_config.get_allowed_tools()
@@ -567,11 +578,48 @@ class AgentService:
                 if self._execution_adapter is not None:
                     self._execution_adapter.config.tools = self.tools
                 self._tools_initialized = True
+                self._tool_policy_signature = policy_signature
             except Exception as exc:
                 logger.error("Failed to initialize tools from configuration: %s", exc)
                 raise RuntimeError(
                     f"Tool initialization failed for AgentService '{self.name}': {exc}"
                 ) from exc
+
+    def _current_tool_policy_signature(self) -> tuple[Any, ...]:
+        if not self.tool_config:
+            return ()
+
+        refresh_overrides = getattr(
+            self.tool_config, "refresh_user_tool_overrides", None
+        )
+        if callable(refresh_overrides):
+            # Re-read the hook-backed policy before comparing signatures.
+            refresh_overrides()
+
+        get_overrides = getattr(self.tool_config, "get_user_tool_overrides", None)
+        overrides: Any = get_overrides() if callable(get_overrides) else {}
+        if isinstance(overrides, dict):
+            override_items = tuple(
+                sorted(
+                    (
+                        str(name),
+                        override.get("enabled") if isinstance(override, dict) else None,
+                    )
+                    for name, override in overrides.items()
+                )
+            )
+        else:
+            override_items = ()
+
+        get_allowed_tools = getattr(self.tool_config, "get_allowed_tools", None)
+        allowed_tools = get_allowed_tools() if callable(get_allowed_tools) else None
+        allowed_items = (
+            None
+            if allowed_tools is None
+            else tuple(str(name) for name in allowed_tools)
+        )
+
+        return (override_items, allowed_items)
 
     def _execution_type(self) -> str:
         if self.pattern == "dag_plan_execute":

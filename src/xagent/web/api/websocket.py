@@ -22,7 +22,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import RedirectResponse
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ...config import (
@@ -31,13 +31,26 @@ from ...config import (
     get_external_upload_dirs,
     get_uploads_dir,
 )
-from ...core.agent.trace import TraceEvent, TraceHandler
+from ...core.agent.trace import TraceEvent, TraceHandler, trace_user_message
+from ...core.file_ref import FILE_REF_MODEL_INSTRUCTIONS, build_file_ref
 from ..auth_dependencies import get_user_from_websocket_token
 from ..models.database import get_db
 from ..models.task import Task, TaskStatus
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.chat_history_service import get_latest_waiting_question
+from ..services.hot_path_cache import (
+    cache_get,
+    cache_set,
+    cache_version_token,
+    task_cache_ttl_seconds,
+    web_task_history_key,
+)
+from ..services.managed_file_ref import (
+    DurableStorageOperationError,
+    build_task_output_storage_key,
+    ensure_uploaded_file_local_path,
+)
 from ..services.task_lease_service import (
     acquire_task_lease,
     mark_task_paused_if_stale,
@@ -46,6 +59,7 @@ from ..services.task_lease_service import (
     run_task_lease_heartbeat,
     stop_task_lease_heartbeat,
 )
+from ..services.uploaded_file_store import UploadedFileStore
 from ..tools.config import WebToolConfig
 from ..tracing import create_ephemeral_tracer
 from ..user_isolated_memory import UserContext
@@ -170,6 +184,8 @@ def _build_uploaded_files_context(
         "## UPLOADED FILES",
         "The user has uploaded file(s) for this turn. Use these exact file_id values:",
         *file_summaries,
+        "",
+        FILE_REF_MODEL_INSTRUCTIONS,
     ]
     if is_agent_builder:
         joined_file_ids = ", ".join(f'"{file_id}"' for file_id in file_ids)
@@ -201,6 +217,29 @@ def _display_message_for_user(user_message: str, has_files: bool) -> str:
     if has_files:
         return "Uploaded file(s)"
     return user_message
+
+
+def _display_file_refs_from_file_info(
+    file_info_list: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return display-safe file refs without runtime paths."""
+    refs: list[dict[str, Any]] = []
+    for file_info in file_info_list:
+        file_id = str(file_info.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        ref: dict[str, Any] = {"file_id": file_id}
+        name = file_info.get("name") or file_info.get("original_name")
+        if name is not None:
+            ref["name"] = str(name)
+        size = file_info.get("size")
+        if size is not None:
+            ref["size"] = size
+        file_type = file_info.get("type")
+        if file_type is not None:
+            ref["type"] = str(file_type)
+        refs.append(ref)
+    return refs
 
 
 def _selected_file_ids_from_task_config(task: Any) -> list[str]:
@@ -273,6 +312,43 @@ def _selected_file_refs_from_task(task: Any, db: Session) -> list[dict[str, Any]
             continue
         refs.append(_uploaded_file_ref(record))
     return refs
+
+
+def _normalize_attachments_for_persistence(
+    file_info_list: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Project file_info_list to the minimal shape we persist on chat rows.
+
+    Thin wrapper around the shared
+    ``core.agent.attachments.project_file_info_to_chip`` so the trace
+    callback and the persistence path can't drift on what fields the
+    browser sees (paths must never leak — the attachments column and the
+    user_message trace events both reach the UI).
+    """
+    from ...core.agent.attachments import project_file_info_to_chip
+
+    return project_file_info_to_chip(file_info_list)
+
+
+def _attachment_fingerprint(attachments: Any) -> str:
+    """Order-independent fingerprint of a chip-shaped attachment list.
+
+    Used by the replay dedup key so two user turns with the same typed
+    text but different uploaded files don't collapse into one. We
+    fingerprint on ``file_id`` only — the field is stable across the
+    trace event payload and the persisted ``TaskChatMessage.attachments``
+    column, and the order of items isn't meaningful for identity.
+    """
+    if not isinstance(attachments, list):
+        return ""
+    file_ids: list[str] = []
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        file_id = item.get("file_id")
+        if isinstance(file_id, str) and file_id.strip():
+            file_ids.append(file_id.strip())
+    return "|".join(sorted(file_ids))
 
 
 def create_stream_event(
@@ -638,12 +714,72 @@ def _add_file_link_aliases(
         path_to_file_id[f"/{task_local_path}"] = file_id
 
 
+def _uploaded_file_record_in_task_scope(
+    file_record: Any, task_id: int, task_user_id: int
+) -> bool:
+    try:
+        record_user_id = int(getattr(file_record, "user_id"))
+    except (TypeError, ValueError):
+        return False
+
+    if record_user_id != int(task_user_id):
+        return False
+
+    record_task_id = getattr(file_record, "task_id", None)
+    if record_task_id is None:
+        return True
+
+    try:
+        return int(record_task_id) == int(task_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def _output_path_in_current_task_scope(
+    relative_path: str, task_id: int, task_user_id: int
+) -> bool:
+    parts = Path(relative_path.lstrip("/")).parts
+    task_dirs = {f"web_task_{task_id}", f"task_{task_id}"}
+
+    if (
+        len(parts) >= 4
+        and parts[0] == f"user_{task_user_id}"
+        and parts[1] in task_dirs
+        and parts[2] == "output"
+    ):
+        return True
+
+    return len(parts) >= 3 and parts[0] in task_dirs and parts[1] == "output"
+
+
+def _normalize_workspace_relative_path(relative_path: str) -> str:
+    normalized = relative_path.strip().lstrip("/")
+    path_parts = [part for part in Path(normalized).parts if part not in ("", ".")]
+    if not path_parts or ".." in path_parts:
+        return Path(normalized).name or "output"
+
+    if path_parts[0].startswith("user_"):
+        path_parts = path_parts[1:]
+
+    if path_parts and (
+        path_parts[0].startswith("web_task_") or path_parts[0].startswith("task_")
+    ):
+        path_parts = path_parts[1:]
+
+    return "/".join(path_parts) if path_parts else "output"
+
+
+def _workspace_category_from_relative_path(relative_path: str) -> str:
+    path_parts = Path(relative_path).parts
+    return path_parts[0] if path_parts else "output"
+
+
 def _normalize_file_outputs(
     db: Session,
     task_id: int,
     task_user_id: int,
     file_outputs: Any,
-) -> tuple[list[Dict[str, str]], Dict[str, str]]:
+) -> tuple[list[Dict[str, Any]], Dict[str, str]]:
     from ..models.uploaded_file import UploadedFile
 
     if isinstance(file_outputs, str):
@@ -651,13 +787,14 @@ def _normalize_file_outputs(
     if not isinstance(file_outputs, list):
         return [], {}
 
-    normalized_outputs: list[Dict[str, str]] = []
+    normalized_outputs: list[Dict[str, Any]] = []
     path_to_file_id: Dict[str, str] = {}
     changed = False
 
     for item in file_outputs:
         item_file_id = ""
         item_filename = ""
+        item_relative_path = ""
         raw_paths: list[str] = []
 
         if isinstance(item, str):
@@ -671,6 +808,8 @@ def _normalize_file_outputs(
                 value = item.get(key)
                 if isinstance(value, str) and value.strip():
                     raw_paths.append(value)
+                    if key == "relative_path":
+                        item_relative_path = value
         else:
             continue
 
@@ -682,18 +821,53 @@ def _normalize_file_outputs(
 
         if resolved_info is None:
             if item_file_id:
+                file_record = (
+                    db.query(UploadedFile)
+                    .filter(
+                        UploadedFile.file_id == item_file_id,
+                        UploadedFile.user_id == task_user_id,
+                        or_(
+                            UploadedFile.task_id == task_id,
+                            UploadedFile.task_id.is_(None),
+                        ),
+                    )
+                    .first()
+                )
+                if file_record is None:
+                    logger.warning(
+                        "Skipping file output outside task/user scope: %s",
+                        item_file_id,
+                    )
+                    continue
                 normalized_outputs.append(
-                    {
-                        "file_id": item_file_id,
-                        "filename": item_filename or "output",
-                    }
+                    build_file_ref(
+                        file_id=str(file_record.file_id),
+                        filename=item_filename or str(file_record.filename),
+                        mime_type=getattr(file_record, "mime_type", None),
+                        size=getattr(file_record, "file_size", None),
+                    )
                 )
             continue
 
         resolved_path, relative_path = resolved_info
         normalized_relative_path = relative_path.lstrip("/")
+        if not _output_path_in_current_task_scope(
+            normalized_relative_path, task_id, task_user_id
+        ):
+            logger.warning(
+                "Skipping file output outside current task output scope: %s",
+                relative_path,
+            )
+            continue
+
+        workspace_relative_path = _normalize_workspace_relative_path(
+            item_relative_path or normalized_relative_path
+        )
+        workspace_category = _workspace_category_from_relative_path(
+            workspace_relative_path
+        )
         expected_file_id = item_file_id or _build_output_file_id(
-            normalized_relative_path
+            workspace_relative_path
         )
 
         file_record = (
@@ -701,26 +875,74 @@ def _normalize_file_outputs(
             .filter(UploadedFile.storage_path == str(resolved_path))
             .first()
         )
+        if file_record is not None and not _uploaded_file_record_in_task_scope(
+            file_record, task_id, task_user_id
+        ):
+            logger.warning(
+                "Skipping file output record outside task/user scope: %s",
+                getattr(file_record, "file_id", str(resolved_path)),
+            )
+            continue
+
         if file_record is None and item_file_id:
             file_record = (
                 db.query(UploadedFile)
-                .filter(UploadedFile.file_id == item_file_id)
+                .filter(
+                    UploadedFile.file_id == item_file_id,
+                    UploadedFile.user_id == task_user_id,
+                    or_(
+                        UploadedFile.task_id == task_id, UploadedFile.task_id.is_(None)
+                    ),
+                )
                 .first()
             )
 
         if file_record is None:
-            file_record = UploadedFile(
-                file_id=expected_file_id,
-                user_id=task_user_id,
-                task_id=task_id,
-                filename=item_filename or resolved_path.name,
-                storage_path=str(resolved_path),
-                mime_type=None,
-                file_size=int(resolved_path.stat().st_size),
-            )
-            db.add(file_record)
-            db.flush()
-            changed = True
+            try:
+                file_record = UploadedFileStore(db).create_from_local_path(
+                    local_path=resolved_path,
+                    user_id=task_user_id,
+                    file_id=expected_file_id,
+                    task_id=task_id,
+                    filename=item_filename or resolved_path.name,
+                    mime_type=None,
+                    storage_key=build_task_output_storage_key(
+                        task_user_id,
+                        task_id,
+                        expected_file_id,
+                        workspace_relative_path,
+                    ),
+                    workspace_relative_path=workspace_relative_path,
+                    workspace_category=workspace_category,
+                )
+                db.flush()
+                changed = True
+            except DurableStorageOperationError:
+                db.rollback()
+                raise
+
+        else:
+            try:
+                file_record = UploadedFileStore(db).upsert_by_storage_path(
+                    user_id=task_user_id,
+                    filename=item_filename or resolved_path.name,
+                    storage_path=resolved_path,
+                    mime_type=None,
+                    file_size=resolved_path.stat().st_size,
+                    storage_key=build_task_output_storage_key(
+                        task_user_id,
+                        task_id,
+                        str(file_record.file_id),
+                        workspace_relative_path,
+                    ),
+                    task_id=task_id,
+                    workspace_relative_path=workspace_relative_path,
+                    workspace_category=workspace_category,
+                )
+                changed = True
+            except DurableStorageOperationError:
+                db.rollback()
+                raise
 
         final_file_id = str(file_record.file_id)
         final_filename = item_filename or str(file_record.filename)
@@ -729,10 +951,12 @@ def _normalize_file_outputs(
             path_to_file_id[item_file_id] = final_file_id
 
         normalized_outputs.append(
-            {
-                "file_id": final_file_id,
-                "filename": final_filename,
-            }
+            build_file_ref(
+                file_id=final_file_id,
+                filename=final_filename,
+                mime_type=getattr(file_record, "mime_type", None),
+                size=getattr(file_record, "file_size", None),
+            )
         )
 
         for raw_path in raw_paths:
@@ -741,6 +965,14 @@ def _normalize_file_outputs(
                 path_to_file_id[stripped] = final_file_id
                 path_to_file_id[stripped.lstrip("/")] = final_file_id
         _add_file_link_aliases(path_to_file_id, normalized_relative_path, final_file_id)
+
+        if workspace_relative_path != normalized_relative_path:
+            path_to_file_id[workspace_relative_path] = final_file_id
+            path_to_file_id[f"/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"preview/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"/preview/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"uploads/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"/uploads/{workspace_relative_path}"] = final_file_id
 
     if changed:
         db.commit()
@@ -773,26 +1005,43 @@ async def execute_task_background(
     user_message: str,
     context: Dict[str, Any],
     agent_manager: Any,
-    user: Any,
-    task: Any,
-    db: Session,
-    force_fresh_execution: bool = False,
+    user_id: int | None,
+    before_message_id: int | None = None,
     llm_user_message: Optional[str] = None,
 ) -> None:
     """Execute task in background without blocking WebSocket message loop"""
+    from ..models.database import get_db
     from ..models.task import Task, TaskStatus
-    from ..services.chat_history_service import persist_assistant_message
+    from ..models.user import User
+    from ..services.chat_history_service import (
+        load_task_transcript,
+        persist_assistant_message,
+    )
+    from ..services.task_execution_context_service import (
+        load_task_execution_recovery_state,
+    )
 
     # Wait for previous background task to complete
     await background_task_manager.wait_for_previous(task_id)
 
+    db_gen = get_db()
     try:
+        db = next(db_gen)
         logger.info(f"Background task execution started for task {task_id}")
 
-        # Set up user context
-        user_id = int(user.id) if user else None
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
 
-        with UserContext(user_id):
+        task_user_id = _task_user_id(task)
+        effective_user_id = user_id if user_id is not None else task_user_id
+        user = (
+            db.query(User).filter(User.id == effective_user_id).first()
+            if effective_user_id is not None
+            else None
+        )
+
+        with UserContext(effective_user_id):
             # Get agent service
             agent_service = await agent_manager.get_agent_for_task(
                 task_id, db, user=user
@@ -801,9 +1050,27 @@ async def execute_task_background(
                 agent_service.set_outbound_message_handler(
                     make_agent_outbound_handler(task_id)
                 )
+            if before_message_id is not None:
+                conversation_history = load_task_transcript(
+                    db,
+                    task_id,
+                    before_message_id=before_message_id,
+                )
+                agent_service.set_conversation_history(conversation_history)
+            recovery_state = await load_task_execution_recovery_state(db, task_id)
+            execution_context_messages = recovery_state.get("messages", [])
+            agent_service.set_execution_context_messages(execution_context_messages)
+            agent_service.set_recovered_skill_context(
+                recovery_state.get("skill_context")
+            )
+            _register_uploaded_files_for_agent(
+                agent_service,
+                context.get("file_info", []),
+                db,
+            )
 
-            # Execute task with automatic token tracking
-            actual_task_id = None if force_fresh_execution else str(task_id)
+            # Execute the next turn under the same task/thread id.
+            actual_task_id = str(task_id)
             task_for_agent = llm_user_message or user_message
             result = await agent_manager.execute_task(
                 agent_service=agent_service,
@@ -814,7 +1081,6 @@ async def execute_task_background(
                 db_session=db,
             )
 
-        task_user_id = _task_user_id(task)
         if task_user_id is not None:
             normalized_outputs, path_to_file_id = _normalize_file_outputs(
                 db,
@@ -844,31 +1110,36 @@ async def execute_task_background(
 
         # Task execution result is logged by ConsoleTraceHandler, no need for duplicate logs
 
-        # Update task status (get new session to avoid expiration)
-        from ..models.database import get_db
-
-        db_gen = get_db()
-        db_new = next(db_gen)
-        waiting_for_control = False
-        final_task_status = task.status.value
+        db_new_gen = get_db()
         try:
+            db_new = next(db_new_gen)
+            waiting_for_control = False
+            final_task_status = task.status.value
             task_updated = db_new.query(Task).filter(Task.id == task_id).first()
             if task_updated:
-                # If task current status is PAUSED, don't overwrite
+                # Caller is responsible for the lease lifecycle (acquire +
+                # release); this function only writes ``status``. The
+                # orchestrator's ``_schedule_bg`` wraps the call in
+                # acquire/release; chat.py and WS continuation paths
+                # acquire and release the lease directly themselves.
+                #
+                # Previously this branch called
+                # ``release_current_runner_task_lease(status=...)``, which
+                # bundled status update with lease release in one UPDATE
+                # filtered on ``runner_id == get_runner_id()``. That hid a
+                # bug for callers that never acquired the lease: the
+                # filter didn't match, so status was silently never
+                # written either (a quiet "stuck RUNNING" outcome).
                 if result.get("status") == "waiting_for_user":
-                    release_current_runner_task_lease(
-                        db_new, task_id, status=TaskStatus.WAITING_FOR_USER
-                    )
-                    db_new.refresh(task_updated)
+                    task_updated.status = TaskStatus.WAITING_FOR_USER
+                    db_new.commit()
                     waiting_for_control = True
                     logger.info(
                         f"Updated task {task_id} status to WAITING_FOR_USER for v2 control state"
                     )
                 elif result.get("status") == "interrupted":
-                    release_current_runner_task_lease(
-                        db_new, task_id, status=TaskStatus.PAUSED
-                    )
-                    db_new.refresh(task_updated)
+                    task_updated.status = TaskStatus.PAUSED
+                    db_new.commit()
                     waiting_for_control = True
                     logger.info(
                         f"Updated task {task_id} status to PAUSED for v2 interrupt state"
@@ -878,14 +1149,10 @@ async def execute_task_background(
                     TaskStatus.WAITING_FOR_USER,
                 }:
                     if result.get("success", False):
-                        release_current_runner_task_lease(
-                            db_new, task_id, status=TaskStatus.COMPLETED
-                        )
+                        task_updated.status = TaskStatus.COMPLETED
                     else:
-                        release_current_runner_task_lease(
-                            db_new, task_id, status=TaskStatus.FAILED
-                        )
-                    db_new.refresh(task_updated)
+                        task_updated.status = TaskStatus.FAILED
+                    db_new.commit()
                     logger.info(
                         f"Updated task {task_id} status to {task_updated.status.value}"
                     )
@@ -913,7 +1180,10 @@ async def execute_task_background(
                         else None,
                     )
         finally:
-            db_new.close()
+            try:
+                next(db_new_gen)
+            except StopIteration:
+                pass
 
         # Note: trace_task_completion is handled by the agent execution logic (e.g., dag_plan_execute.py)
 
@@ -980,151 +1250,10 @@ async def execute_task_background(
     finally:
         # Clean up background task record
         background_task_manager.cleanup_task(task_id)
-
-
-async def execute_continuation_background(
-    task_id: int,
-    user_message: str,
-    context: Dict[str, Any],
-    agent_service: Any,
-    dag_pattern: Any,
-    user: Any,
-    task: Any,
-    db: Session,
-) -> None:
-    """Execute continuation in background without blocking WebSocket message loop"""
-    from ..models.task import Task, TaskStatus
-    from ..services.chat_history_service import persist_assistant_message
-
-    # Get current task reference and register immediately
-    current_task = asyncio.current_task()
-    if current_task is not None:
-        background_task_manager.register_task(task_id, current_task)
-
-    # Wait for previous background task to complete
-    await background_task_manager.wait_for_previous(task_id)
-
-    try:
-        logger.info(f"Background continuation started for task {task_id}")
-
-        # Set up user context
-        user_id = int(user.id) if user else None
-
-        with UserContext(user_id):
-            # Call continuation
-            result = await dag_pattern.handle_continuation(user_message, context)
-
-        task_user_id = _task_user_id(task)
-        if task_user_id is not None:
-            normalized_outputs, path_to_file_id = _normalize_file_outputs(
-                db,
-                task_id=int(task_id),
-                task_user_id=task_user_id,
-                file_outputs=result.get("file_outputs", []),
-            )
-        else:
-            normalized_outputs, path_to_file_id = [], {}
-        if normalized_outputs:
-            result["file_outputs"] = normalized_outputs
-
-        # Get AI response
-        chat_response = result.get("chat_response")
-        if isinstance(chat_response, dict):
-            ai_response = chat_response.get("message") or result.get(
-                "output", "Task continuation completed"
-            )
-        else:
-            ai_response = result.get("output", "Task continuation completed")
-
-        # Rewrite file links to file_id
-        ai_response = _rewrite_file_links_to_file_id(
-            ai_response,
-            path_to_file_id,
-        )
-
-        # Update task status (get new session to avoid expiration)
-        from ..models.database import get_db
-
-        db_gen = get_db()
-        db_new = next(db_gen)
         try:
-            task_updated = db_new.query(Task).filter(Task.id == task_id).first()
-            if task_updated:
-                # If task current status is PAUSED/WAITING_FOR_USER, don't overwrite
-                if task_updated.status not in {
-                    TaskStatus.PAUSED,
-                    TaskStatus.WAITING_FOR_USER,
-                }:
-                    if result.get("success", False):
-                        task_updated.status = TaskStatus.COMPLETED
-                    else:
-                        task_updated.status = TaskStatus.FAILED
-                    db_new.commit()
-                    logger.info(
-                        f"Updated task {task_id} status to {task_updated.status.value}"
-                    )
-                else:
-                    logger.info(f"Task {task_id} is paused, not updating status")
-
-                persist_assistant_message(
-                    db_new,
-                    task_id=task_id,
-                    user_id=int(task.user_id),
-                    content=str(
-                        chat_response.get("message", ai_response)
-                        if isinstance(chat_response, dict)
-                        else ai_response
-                    ),
-                    message_type="chat_response"
-                    if isinstance(chat_response, dict)
-                    else "final_answer",
-                    interactions=chat_response.get("interactions")
-                    if isinstance(chat_response, dict)
-                    else None,
-                )
-        finally:
-            db_new.close()
-
-        # Send task completion event
-        await manager.broadcast_to_task(
-            {
-                "type": "task_continuation_completed",
-                "task_id": task_id,
-                "result": ai_response,
-                "output": ai_response,
-                "success": result.get("success", False),
-                "chat_response": chat_response
-                if isinstance(chat_response, dict)
-                else None,
-                "timestamp": datetime.now(timezone.utc).timestamp(),
-            },
-            task_id,
-        )
-        logger.info(f"Background continuation for task {task_id} completed")
-
-    except Exception as e:
-        logger.error(
-            f"Background continuation for task {task_id} failed: {e}", exc_info=True
-        )
-        # Send error event
-        try:
-            await manager.broadcast_to_task(
-                {
-                    "type": "task_error",
-                    "task_id": task_id,
-                    "error": str(e),
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                },
-                task_id,
-            )
-        except Exception as broadcast_error:
-            logger.error(f"Failed to send error notification: {broadcast_error}")
-    except asyncio.CancelledError:
-        logger.info(f"Background continuation for task {task_id} cancelled")
-        raise
-    finally:
-        # Clean up background task records
-        background_task_manager.cleanup_task(task_id)
+            next(db_gen)
+        except StopIteration:
+            pass
 
 
 async def execute_resume_background(
@@ -1489,16 +1618,21 @@ async def redirect_legacy_preview(
             )
 
         owner_user_id, task_id = owner_info
-        file_record = UploadedFile(
-            file_id=_build_output_file_id(relative_path),
+        generated_file_id = _build_output_file_id(relative_path)
+        file_record = UploadedFileStore(db).create_from_local_path(
+            local_path=resolved_path,
             user_id=owner_user_id,
+            file_id=generated_file_id,
             task_id=task_id,
             filename=resolved_path.name,
-            storage_path=str(resolved_path),
             mime_type=None,
-            file_size=int(resolved_path.stat().st_size),
+            storage_key=build_task_output_storage_key(
+                owner_user_id,
+                cast(int, task_id),
+                generated_file_id,
+                relative_path,
+            ),
         )
-        db.add(file_record)
         db.commit()
         db.refresh(file_record)
 
@@ -1583,10 +1717,7 @@ async def handle_file_upload_for_task(
 ) -> dict:
     """Handle file upload for task"""
     try:
-        from pathlib import Path
-
         from ..models.uploaded_file import UploadedFile
-        from .chat import get_agent_manager
 
         uploaded_files = []
         file_info_list = []
@@ -1602,12 +1733,6 @@ async def handle_file_upload_for_task(
                 task_id,
             )
             return {"uploaded_files": [], "file_info_list": []}
-
-        # Get agent
-        agent_service = await get_agent_manager().get_agent_for_task(
-            task_id, db, user=user
-        )
-        logger.info(f"🤖 Got agent service for task {task_id}")
 
         for file_info in files:
             file_id = file_info.get("file_id")
@@ -1638,16 +1763,13 @@ async def handle_file_upload_for_task(
             file_name = file_record.filename
             file_size = file_record.file_size
             file_type = file_record.mime_type
-            source_path = Path(str(file_record.storage_path))
+            source_path = ensure_uploaded_file_local_path(file_record)
 
             if not source_path.exists():
                 logger.warning(f"Physical file not found: {source_path}")
                 continue
 
             try:
-                # Add file to workspace, use original filename
-                from pathlib import Path
-
                 # Use normalized filename instead of original
                 original_file_name = Path(file_name).name
                 normalized_file_name = normalize_filename(original_file_name)
@@ -1661,60 +1783,10 @@ async def handle_file_upload_for_task(
                 target_path = source_path
                 uploaded_files.append(str(target_path))
 
-                workspace_link_path: Path | None = None
-                if agent_service.workspace:
-                    try:
-                        input_dir = Path(agent_service.workspace.input_dir)
-                        input_dir.mkdir(parents=True, exist_ok=True)
-                        candidate = input_dir / normalized_file_name
-                        # If something with the same name already exists in
-                        # input/, give the link a unique numeric suffix.
-                        suffix_idx = 1
-                        stem, ext = candidate.stem, candidate.suffix
-                        while candidate.exists() or candidate.is_symlink():
-                            try:
-                                if candidate.resolve() == source_path.resolve():
-                                    break  # already pointing at the right file
-                            except OSError:
-                                pass
-                            candidate = input_dir / f"{stem}_{suffix_idx}{ext}"
-                            suffix_idx += 1
-                        if not (candidate.exists() or candidate.is_symlink()):
-                            try:
-                                candidate.symlink_to(source_path.resolve())
-                                workspace_link_path = candidate
-                            except OSError as link_err:
-                                # Fall back to copy when symlinks aren't
-                                # supported (e.g. some Windows configs).
-                                logger.warning(
-                                    f"symlink failed ({link_err}); copying "
-                                    f"{source_path.name} into workspace"
-                                )
-
-                                shutil.copy2(source_path, candidate)
-                                workspace_link_path = candidate
-                        else:
-                            workspace_link_path = candidate
-                    except Exception as link_err:  # noqa: BLE001
-                        logger.warning(
-                            f"Could not expose {source_path.name} in task "
-                            f"workspace input/: {link_err}"
-                        )
-
                 if file_record.task_id is None:
                     file_record.task_id = task_id
 
                 db.flush()
-
-                if agent_service.workspace:
-                    # Pass absolute path so resolve_path() in register_file
-                    # doesn't mistake a CWD-relative storage_path for a
-                    # workspace-relative one (looking under output/...).
-                    agent_service.workspace.register_file(
-                        str(target_path.resolve()),
-                        file_id=str(file_record.file_id),
-                        db_session=db,
-                    )
 
                 # Build file info using normalized filename
                 file_info_list.append(
@@ -1725,15 +1797,12 @@ async def handle_file_upload_for_task(
                         "size": file_size,
                         "type": file_type,
                         "path": str(target_path),
-                        "workspace_path": (
-                            str(workspace_link_path) if workspace_link_path else None
-                        ),
+                        "workspace_path": None,
                     }
                 )
 
                 logger.info(
-                    f"File registered: storage={target_path} "
-                    f"input_link={workspace_link_path} "
+                    f"File staged: storage={target_path} "
                     f"(original={original_file_name} normalized={normalized_file_name})"
                 )
 
@@ -1748,6 +1817,73 @@ async def handle_file_upload_for_task(
     except Exception as e:
         logger.error(f"Error handling file upload for task {task_id}: {e}")
         raise
+
+
+def _register_uploaded_files_for_agent(
+    agent_service: Any,
+    file_info_list: List[Dict[str, Any]],
+    db: Session,
+) -> None:
+    """Expose staged upload records to the agent workspace under its DB session."""
+    workspace = getattr(agent_service, "workspace", None)
+    if not workspace:
+        return
+
+    input_dir = Path(workspace.input_dir)
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    for file_info in file_info_list:
+        file_id = str(file_info.get("file_id") or "")
+        source_path = Path(str(file_info.get("path") or ""))
+        if not file_id or not source_path.exists():
+            logger.warning(
+                "Skipping unavailable uploaded file for workspace: %s", file_info
+            )
+            continue
+
+        normalized_file_name = normalize_filename(
+            Path(str(file_info.get("name") or source_path.name)).name
+        )
+        candidate = input_dir / normalized_file_name
+        suffix_idx = 1
+        stem, ext = candidate.stem, candidate.suffix
+        while candidate.exists() or candidate.is_symlink():
+            try:
+                if candidate.resolve() == source_path.resolve():
+                    break
+            except OSError:
+                pass
+            candidate = input_dir / f"{stem}_{suffix_idx}{ext}"
+            suffix_idx += 1
+
+        workspace_link_path: Path | None
+        if candidate.exists() or candidate.is_symlink():
+            workspace_link_path = candidate
+        else:
+            try:
+                candidate.symlink_to(source_path.resolve())
+                workspace_link_path = candidate
+            except OSError as link_err:
+                logger.warning(
+                    f"symlink failed ({link_err}); copying "
+                    f"{source_path.name} into workspace"
+                )
+                shutil.copy2(source_path, candidate)
+                workspace_link_path = candidate
+
+        # Pass absolute path so resolve_path() in register_file doesn't mistake
+        # a CWD-relative storage_path for a workspace-relative one.
+        workspace.register_file(
+            str(source_path.resolve()),
+            file_id=file_id,
+            db_session=db,
+        )
+        file_info["workspace_path"] = str(workspace_link_path)
+        logger.info(
+            "File registered for agent workspace: storage=%s input_link=%s",
+            source_path,
+            workspace_link_path,
+        )
 
 
 async def get_authenticated_user(
@@ -1841,13 +1977,6 @@ async def handle_chat_message(
 
         # Call Agent to handle - use same agent manager as chat API
         try:
-            from ..services.chat_history_service import (
-                load_task_transcript,
-                persist_user_message,
-            )
-            from ..services.task_execution_context_service import (
-                load_task_execution_recovery_state,
-            )
             from .chat import get_agent_manager
 
             # Get database session
@@ -2042,6 +2171,7 @@ async def handle_chat_message(
                         file_prompt = (
                             "## UPLOADED FILES\n"
                             f"The user has uploaded {len(file_info_list)} file(s): {file_names}\n\n"
+                            f"{FILE_REF_MODEL_INSTRUCTIONS}\n\n"
                         )
 
                         if is_agent_builder:
@@ -2076,45 +2206,47 @@ async def handle_chat_message(
                     user_message,
                     bool(file_info_list),
                 )
+                display_file_refs = _display_file_refs_from_file_info(file_info_list)
+                context["display_message"] = display_user_message
+                context["files"] = display_file_refs
 
                 # DAG plan-execute will automatically send user_message trace event
 
-                # Get agent service
-                agent_service = await get_agent_manager().get_agent_for_task(
-                    task_id, db, user=user
-                )
-                if hasattr(agent_service, "set_outbound_message_handler"):
-                    agent_service.set_outbound_message_handler(
-                        make_agent_outbound_handler(task_id)
-                    )
-
-                persisted_user_message = persist_user_message(
-                    db,
-                    task_id=task_id,
-                    user_id=int(user.id),
-                    content=display_user_message,
-                )
+                # The user message is persisted inside
+                # ``TaskTurnOrchestrator.begin_turn`` as part of the atomic
+                # transition (claim + persist + schedule commit together).
 
                 # Check if there's an old task running (PAUSED, WAITING_FOR_USER, or RUNNING status)
                 # If so, use continuation mechanism; otherwise execute normally
-                dag_pattern = (
-                    agent_service.get_dag_pattern()
-                    if hasattr(agent_service, "get_dag_pattern")
-                    else None
-                )
-
                 # Only use continuation when task is active and has old task
                 task_is_running = task.status in [
                     TaskStatus.PAUSED,
                     TaskStatus.WAITING_FOR_USER,
                     TaskStatus.RUNNING,
                 ]
-                supports_live_control = getattr(
-                    agent_service, "supports_live_control", lambda: False
-                )()
-                has_continuation = dag_pattern and hasattr(
-                    dag_pattern, "request_continuation"
-                )
+                agent_service = None
+                dag_pattern = None
+                supports_live_control = False
+                has_continuation = False
+                if task_is_running:
+                    agent_service = await get_agent_manager().get_agent_for_task(
+                        task_id, db, user=user
+                    )
+                    if hasattr(agent_service, "set_outbound_message_handler"):
+                        agent_service.set_outbound_message_handler(
+                            make_agent_outbound_handler(task_id)
+                        )
+                    dag_pattern = (
+                        agent_service.get_dag_pattern()
+                        if hasattr(agent_service, "get_dag_pattern")
+                        else None
+                    )
+                    supports_live_control = getattr(
+                        agent_service, "supports_live_control", lambda: False
+                    )()
+                    has_continuation = bool(
+                        dag_pattern and hasattr(dag_pattern, "request_continuation")
+                    )
 
                 if task_is_running and has_continuation and not supports_live_control:
                     # Use continuation: old task will handle at appropriate time
@@ -2125,13 +2257,21 @@ async def handle_chat_message(
                     if hasattr(dag_pattern, "tracer") and hasattr(
                         dag_pattern, "task_id"
                     ):
-                        from ...core.agent.trace import trace_user_message
-
-                        trace_data = {
+                        trace_data: Dict[str, Any] = {
                             "context": context,
                             "pattern": "DAG Plan-Execute Continuation",
                             "continuation": "true",
+                            "files": display_file_refs,
                         }
+                        # Surface uploaded files at the top level so the
+                        # frontend user-message renderer can show clickable
+                        # file chips alongside the continuation bubble
+                        # (matches what historical replay shows on reload).
+                        # ``files`` is already populated above via #455's
+                        # display_file_refs; mirror it under ``attachments``
+                        # for the historical-replay client contract.
+                        if display_file_refs:
+                            trace_data["attachments"] = display_file_refs
                         await trace_user_message(
                             dag_pattern.tracer,
                             str(dag_pattern.task_id),
@@ -2197,9 +2337,26 @@ async def handle_chat_message(
                     return
                 if task_is_running and supports_live_control:
                     logger.info(f"Using agent message control for task {task_id}")
+                    assert agent_service is not None
+                    # Pass the user-typed bubble text + display-safe file refs
+                    # alongside the LLM-augmented execution text. The runner
+                    # persists them onto Message.metadata so its tracing
+                    # callback can emit the bubble with the typed content +
+                    # file chips rather than the inflated prompt; matches what
+                    # historical replay shows on reload.
+                    # ``post_user_message`` routes into ``AgentRunner.inject_user_message``,
+                    # which dispatches ``on_user_message_posted`` — that callback
+                    # is the single emission point for the live-control
+                    # continuation user-message trace. Do not emit a second
+                    # ``trace_user_message`` here; doing so would render the
+                    # bubble twice in the live UI. The DAG Plan-Execute
+                    # continuation path above is a separate code path and
+                    # keeps its own immediate trace.
                     posted = await agent_service.post_user_message(
                         str(task_id),
-                        user_message_for_llm,
+                        execution_message=user_message_for_llm,
+                        display_message=display_user_message,
+                        files=display_file_refs,
                         request_interrupt=task.status == TaskStatus.RUNNING,
                         reason="new websocket user message",
                     )
@@ -2239,35 +2396,6 @@ async def handle_chat_message(
                     logger.info(
                         f"Task {task_id} starting new execution turn (status: {task.status.value})"
                     )
-
-                    if persisted_user_message is not None:
-                        conversation_history = load_task_transcript(
-                            db,
-                            task_id,
-                            before_message_id=int(persisted_user_message.id),
-                        )
-                        agent_service.set_conversation_history(conversation_history)
-                    recovery_state = await load_task_execution_recovery_state(
-                        db, task_id
-                    )
-                    execution_context_messages = recovery_state.get("messages", [])
-                    agent_service.set_execution_context_messages(
-                        execution_context_messages
-                    )
-                    agent_service.set_recovered_skill_context(
-                        recovery_state.get("skill_context")
-                    )
-
-                    # IMPORTANT: Check if task was completed/failed BEFORE updating status
-                    # This is needed to force fresh execution instead of continuation
-                    was_completed_or_failed = task.status in [
-                        TaskStatus.COMPLETED,
-                        TaskStatus.FAILED,
-                    ]
-                    if was_completed_or_failed:
-                        logger.info(
-                            f"🔄 Task {task_id} was {task.status.value}, will force fresh execution"
-                        )
 
                     # The execution wrapper acquires the lease just before it
                     # starts running. Avoid acquiring it during setup so setup
@@ -2329,7 +2457,6 @@ async def handle_chat_message(
                         logger.info(f"task_info event sent for existing task {task_id}")
 
                     # Build context with vibe mode information if available
-                    context["display_user_message"] = display_user_message
                     if hasattr(task, "execution_mode") and task.execution_mode:
                         context["execution_mode"] = task.execution_mode
                     if (
@@ -2340,33 +2467,100 @@ async def handle_chat_message(
                     if hasattr(task, "examples") and task.examples:
                         context["examples"] = task.examples
 
-                    # For completed/failed tasks, we need to force a fresh execution
-                    # by not passing task_id to agent.execute_task
-                    force_fresh_execution = was_completed_or_failed
-                    if force_fresh_execution:
-                        logger.info(
-                            f"Confirmed: Task {task_id} was completed/failed, forcing fresh execution"
-                        )
-
-                    # Create background task execution, don't block WebSocket message loop
-                    bg_task = asyncio.create_task(
-                        execute_task_background(
-                            task_id=task_id,
-                            user_message=display_user_message,
-                            context=context,
-                            agent_manager=get_agent_manager(),
-                            user=user,
-                            task=task,
-                            db=db,
-                            force_fresh_execution=force_fresh_execution,
-                            llm_user_message=user_message_for_llm,
-                        )
+                    # WS builds the display/execution payload here and
+                    # delegates the full new-turn transition to the
+                    # shared orchestrator. ``begin_turn`` owns the
+                    # atomic claim (status flip + input set + terminal-
+                    # field reset), the transcript persist, the
+                    # single-commit transaction, and the lease-aware bg
+                    # schedule -- so WS and /v1 SDK use one turn-
+                    # lifecycle state machine.
+                    from ..services.task_orchestrator import (
+                        TaskTurnError,
+                        TaskTurnOrchestrator,
+                        TaskTurnPayload,
+                        TurnKind,
                     )
 
-                    # Register background task, ensure only one task executes at a time
-                    background_task_manager.register_task(task_id, bg_task)
+                    # Strip absolute filesystem paths before the row hits
+                    # disk — the attachments column is exposed to historical-
+                    # replay clients, so paths must not leak.
+                    persisted_attachments = _normalize_attachments_for_persistence(
+                        file_info_list
+                    )
+                    payload = TaskTurnPayload(
+                        transcript_message=display_user_message,
+                        execution_message=user_message_for_llm,
+                        attachments=persisted_attachments or None,
+                    )
+                    # WS path only has two legal entries into begin_turn:
+                    #   PENDING                  → CREATE
+                    #   COMPLETED / FAILED       → APPEND
+                    # PAUSED / WAITING_FOR_USER / RUNNING should have been
+                    # intercepted by the continuation path above. Reaching
+                    # this branch with any of them is an upstream-dispatch
+                    # bug; surface it as an agent_error rather than
+                    # silently letting begin_turn 409 on the wrong status.
+                    if task.status == TaskStatus.PENDING:
+                        turn_kind = TurnKind.CREATE
+                        turn_force_fresh = False
+                    elif task.status in (
+                        TaskStatus.COMPLETED,
+                        TaskStatus.FAILED,
+                    ):
+                        turn_kind = TurnKind.APPEND
+                        turn_force_fresh = False
+                    else:
+                        logger.error(
+                            f"WS schedule reached for task {task_id} with "
+                            f"unexpected status={task.status}; expected "
+                            "PENDING or terminal. Continuation path should "
+                            "have intercepted."
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                "type": "agent_error",
+                                "message": ("Internal dispatch error; please retry."),
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
+                        return
 
-                    logger.info(f"Task {task_id} started in background")
+                    try:
+                        await TaskTurnOrchestrator.begin_turn(
+                            task=task,
+                            payload=payload,
+                            user=user,
+                            db=db,
+                            kind=turn_kind,
+                            force_fresh=turn_force_fresh,
+                            context=context,
+                        )
+                        logger.info(f"Task {task_id} started in background")
+                    except TaskTurnError as busy_err:
+                        # begin_turn's atomic transaction rolls back on
+                        # bg_inflight / busy — neither the status flip
+                        # nor the user message persists, so no transcript
+                        # cleanup is needed here. The rejected-turn-leaves-
+                        # no-side-effect contract makes the previous
+                        # best-effort delete unnecessary.
+                        logger.warning(
+                            f"Refused to schedule bg for task {task_id}: "
+                            f"{busy_err.reason}"
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                "type": "agent_error",
+                                "message": (
+                                    "Task is currently busy; please wait for "
+                                    "the previous turn to finish before sending "
+                                    "another message."
+                                ),
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
 
             finally:
                 db.close()
@@ -2657,6 +2851,38 @@ async def send_historical_data_as_stream(
             if mark_task_paused_if_stale(db, task):
                 db.refresh(task)
 
+            max_trace_event_id = (
+                db.query(func.max(TraceEvent.id))
+                .filter(
+                    TraceEvent.task_id == task_id,
+                    TraceEvent.build_id.is_(None),
+                )
+                .scalar()
+                or 0
+            )
+            max_chat_message_id = (
+                db.query(func.max(TaskChatMessage.id))
+                .filter(TaskChatMessage.task_id == task_id)
+                .scalar()
+                or 0
+            )
+            cache_key = web_task_history_key(task_id)
+            task_updated_at = cache_version_token(task.updated_at)
+            cached = cache_get(cache_key)
+            if (
+                isinstance(cached, dict)
+                and cached.get("updated_at") == task_updated_at
+                and cached.get("max_trace_event_id") == int(max_trace_event_id)
+                and cached.get("max_chat_message_id") == int(max_chat_message_id)
+                and isinstance(cached.get("events"), list)
+            ):
+                for cached_event in cached["events"]:
+                    if isinstance(cached_event, dict):
+                        await manager.send_personal_message(cached_event, websocket)
+                return
+
+            cached_stream_events: list[dict[str, Any]] = []
+
             # Determine is_dag from agent config if agent_id exists
             is_dag = None
             if task.agent_id:
@@ -2709,6 +2935,7 @@ async def send_historical_data_as_stream(
                 task.created_at if task.created_at else None,
             )
             await manager.send_personal_message(task_event, websocket)
+            cached_stream_events.append(task_event)
 
             # Get unified trace events (only VIBE phase, exclude BUILD phase)
             trace_events = (
@@ -2735,7 +2962,12 @@ async def send_historical_data_as_stream(
             historical_path_to_file_id: Dict[str, str] = {}
             normalized_trace_data_by_event_id: Dict[str, Any] = {}
             task_user_id = int(cast(Any, task.user_id))
-            trace_message_keys: set[tuple[str, str]] = set()
+            # Dedup key for "is this chat_messages row already covered by a
+            # trace event?". Includes an attachment fingerprint so two
+            # user turns with the same typed text but different uploaded
+            # files no longer collapse into one — the second row used to
+            # be dropped and its file chips disappeared on reload.
+            trace_message_keys: set[tuple[str, str, str]] = set()
 
             for trace_event in trace_events:
                 normalized_event_data = trace_event.data
@@ -2759,10 +2991,18 @@ async def send_historical_data_as_stream(
                         "message"
                     ) or normalized_event_data.get("content")
                     if isinstance(content, str) and content.strip():
+                        event_attachments = normalized_event_data.get(
+                            "files"
+                        ) or normalized_event_data.get("attachments")
+                        attachment_key = _attachment_fingerprint(event_attachments)
                         if trace_event.event_type == "user_message":
-                            trace_message_keys.add(("user", content.strip()))
+                            trace_message_keys.add(
+                                ("user", content.strip(), attachment_key)
+                            )
                         elif trace_event.event_type in {"agent_message", "ai_message"}:
-                            trace_message_keys.add(("assistant", content.strip()))
+                            trace_message_keys.add(
+                                ("assistant", content.strip(), attachment_key)
+                            )
 
             for trace_event in trace_events:
                 normalized_event_data = normalized_trace_data_by_event_id.get(
@@ -2802,14 +3042,37 @@ async def send_historical_data_as_stream(
             for chat_message in chat_messages:
                 role = str(chat_message.role)
                 content = str(chat_message.content or "").strip()
-                if not content:
+                # Read attachments off the row so file-only turns (empty
+                # content + non-empty attachments) survive replay and so the
+                # chip metadata reaches the synthesized user_message event.
+                _attachments_raw = chat_message.attachments
+                row_attachments: Optional[list] = (
+                    _attachments_raw
+                    if isinstance(_attachments_raw, list) and _attachments_raw
+                    else None
+                )
+                # Drop only when there's nothing to render — empty text *and*
+                # no attachments. A row with attachments but no text is a real
+                # turn (user uploaded files without typing) and must be kept.
+                if not content and not row_attachments:
                     continue
-                if (role, content) in trace_message_keys:
+                if (
+                    content
+                    and (role, content, _attachment_fingerprint(row_attachments))
+                    in trace_message_keys
+                ):
                     continue
 
                 if role == "user":
                     event_type = "user_message"
                     data: dict[str, Any] = {"message": content, "content": content}
+                    if row_attachments:
+                        # Surface the persisted chip payload at the top level
+                        # so the frontend user-message renderer can show
+                        # clickable file chips on reload, matching the live
+                        # event shape emitted by the agent tracing callback.
+                        data["files"] = row_attachments
+                        data["attachments"] = row_attachments
                 elif role == "assistant":
                     interactions = chat_message.interactions
                     data = {
@@ -2904,6 +3167,7 @@ async def send_historical_data_as_stream(
                     if event_data.get("step_id"):
                         stream_event["step_id"] = str(event_data["step_id"])
                     await manager.send_personal_message(stream_event, websocket)
+                    cached_stream_events.append(stream_event)
                 else:
                     # For other events, use original format
                     event_data = event["data"]
@@ -2915,6 +3179,7 @@ async def send_historical_data_as_stream(
                             event["timestamp"],
                         )
                         await manager.send_personal_message(event_obj, websocket)
+                        cached_stream_events.append(event_obj)
 
             # Send historical data completion marker
             completion_event = create_stream_event(
@@ -2926,6 +3191,7 @@ async def send_historical_data_as_stream(
                 },
             )
             await manager.send_personal_message(completion_event, websocket)
+            cached_stream_events.append(completion_event)
 
             # Historical trace replay can end with an in-flight event from before a
             # crash/restart, such as llm_call_start. Re-assert the current DB task
@@ -2960,6 +3226,18 @@ async def send_historical_data_as_stream(
                 if isinstance(question_interactions, list):
                     status_event["interactions"] = question_interactions
                 await manager.send_personal_message(status_event, websocket)
+                cached_stream_events.append(status_event)
+
+            cache_set(
+                cache_key,
+                {
+                    "updated_at": task_updated_at,
+                    "max_trace_event_id": int(max_trace_event_id),
+                    "max_chat_message_id": int(max_chat_message_id),
+                    "events": cached_stream_events,
+                },
+                ttl_seconds=task_cache_ttl_seconds(),
+            )
 
         except (ValueError, KeyError, TypeError) as e:
             # Data format error
@@ -3446,6 +3724,7 @@ async def handle_builder_chat(
             if file_ids:
                 user_message += (
                     f"\n\n[Uploaded file_ids: {file_ids}. "
+                    "Use file_id as the canonical file handle and do not guess storage paths. "
                     "Please call `create_knowledge_base_from_file` with these file_ids immediately, "
                     "then create or update the agent with the resulting collection_name.]"
                 )
@@ -4427,7 +4706,7 @@ async def handle_build_preview_execution(
                     file_name = file_record.filename
                     file_size = file_record.file_size
                     file_type = file_record.mime_type
-                    source_path = Path(str(file_record.storage_path))
+                    source_path = ensure_uploaded_file_local_path(file_record)
 
                     if not source_path.exists():
                         logger.warning(f"Physical file not found: {source_path}")

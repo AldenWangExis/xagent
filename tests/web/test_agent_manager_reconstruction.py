@@ -1,11 +1,13 @@
 """Unit tests for AgentServiceManager task existence checking and reconstruction"""
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from xagent.web.api.chat import AgentServiceManager
+from xagent.web.models.agent import Agent
 from xagent.web.models.task import (
     DAGExecution,
     DAGExecutionPhase,
@@ -253,6 +255,57 @@ class TestAgentServiceManagerReconstruction:
         assert str(uploads_dir / "user_7") in workspace_config["allowed_external_dirs"]
 
     @pytest.mark.asyncio
+    async def test_build_tools_maps_categories_from_full_catalog(
+        self, agent_manager, mock_db, sample_task, mock_user, monkeypatch
+    ):
+        """Disabled runtime tools should still be eligible for category allow-lists."""
+
+        class _Tool:
+            description = ""
+
+            def __init__(self, name: str, category: str) -> None:
+                self.name = name
+                self.metadata = SimpleNamespace(
+                    category=SimpleNamespace(value=category)
+                )
+
+        basic_tool = _Tool("calculator", "basic")
+        browser_tool = _Tool("browser_navigate", "browser")
+        override_filter_values: list[bool] = []
+
+        async def create_all_tools(
+            config,
+            apply_user_override_filter: bool = True,
+        ):
+            override_filter_values.append(apply_user_override_filter)
+            if apply_user_override_filter:
+                return [basic_tool]
+            return [basic_tool, browser_tool]
+
+        monkeypatch.setattr(
+            "xagent.core.tools.adapters.vibe.factory.ToolFactory.create_all_tools",
+            create_all_tools,
+        )
+
+        with patch("xagent.web.sandbox_manager.get_sandbox_manager", return_value=None):
+            _tools, tool_config = await agent_manager._build_tools_for_task(
+                task_id=sample_task.id,
+                task=sample_task,
+                db=mock_db,
+                user=mock_user,
+                agent_config={
+                    "tool_categories": ["browser"],
+                    "knowledge_bases": [],
+                    "skills": [],
+                },
+                task_llm=None,
+                task_vision_llm=None,
+            )
+
+        assert override_filter_values[0] is False
+        assert tool_config.get_allowed_tools() == ["browser_navigate"]
+
+    @pytest.mark.asyncio
     async def test_get_agent_for_task_existing_task_with_reconstruction(
         self,
         agent_manager,
@@ -362,10 +415,12 @@ class TestAgentServiceManagerReconstruction:
         mock_db.query.side_effect = mock_query_side_effect
 
         # Mock AgentService创建和reconstruct_from_history
+        runtime_llm = MagicMock()
+        runtime_llm.model_name = "task-qwen"
         with (
             patch(
                 "xagent.web.api.chat.resolve_llms_from_names",
-                return_value=(None, None, None, None),
+                return_value=(runtime_llm, None, None, None),
             ),
             patch(
                 "xagent.web.api.chat.create_default_tools",
@@ -389,6 +444,90 @@ class TestAgentServiceManagerReconstruction:
         _, agent_kwargs = mock_agent_service_class.call_args
         assert agent_kwargs["tools"] == ["tool"]
         assert agent_kwargs["tool_config"] == "tool_config"
+
+    @pytest.mark.asyncio
+    async def test_reconstruct_agent_from_history_uses_shared_runtime_config(
+        self,
+        agent_manager,
+        mock_db,
+        mock_user,
+        sample_task,
+        sample_trace_events,
+        sample_dag_execution,
+    ):
+        """Active-task reconstruction should reuse the normal LLM merge contract."""
+        sample_task.agent_id = 9
+        runtime_llm = MagicMock()
+        runtime_llm.model_name = "task-qwen"
+
+        mock_task_query = MagicMock()
+        mock_task_query.first.return_value = sample_task
+        mock_task_query.filter.return_value = mock_task_query
+        mock_user_query = MagicMock()
+        mock_user_query.first.return_value = mock_user
+        mock_user_query.filter.return_value = mock_user_query
+        mock_trace_query = MagicMock()
+        mock_trace_query.all.return_value = sample_trace_events
+        mock_trace_query.filter.return_value = mock_trace_query
+        mock_dag_query = MagicMock()
+        mock_dag_query.first.return_value = sample_dag_execution
+        mock_dag_query.filter.return_value = mock_dag_query
+        mock_agent_query = MagicMock()
+        mock_agent_query.first.return_value = None
+        mock_agent_query.filter.return_value = mock_agent_query
+
+        def mock_query_side_effect(model):
+            if model == Task:
+                return mock_task_query
+            if model == User:
+                return mock_user_query
+            if model == TraceEvent:
+                return mock_trace_query
+            if model == DAGExecution:
+                return mock_dag_query
+            if model == Agent:
+                return mock_agent_query
+            return MagicMock()
+
+        mock_db.query.side_effect = mock_query_side_effect
+        agent_manager._resolve_task_runtime_config = MagicMock(
+            return_value={
+                "agent_config": {
+                    "instructions": "",
+                    "skills": [],
+                    "knowledge_bases": [],
+                },
+                "task_llm": runtime_llm,
+                "task_fast_llm": None,
+                "task_vision_llm": None,
+                "task_compact_llm": None,
+                "task_pattern": "react",
+            }
+        )
+
+        with (
+            patch(
+                "xagent.web.api.chat.create_default_tools",
+                new=AsyncMock(return_value=(["tool"], "tool_config")),
+            ),
+            patch("xagent.web.sandbox_manager.get_sandbox_manager", return_value=None),
+            patch("xagent.web.api.chat.AgentService") as mock_agent_service_class,
+        ):
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.reconstruct_from_history = AsyncMock()
+            mock_agent_service_class.return_value = mock_agent_instance
+
+            await agent_manager._reconstruct_agent_from_history(1, mock_db)
+
+        agent_manager._resolve_task_runtime_config.assert_called_once_with(
+            task_id=1,
+            task=sample_task,
+            db=mock_db,
+            user=mock_user,
+        )
+        _, agent_kwargs = mock_agent_service_class.call_args
+        assert agent_kwargs["llm"] is runtime_llm
+        assert agent_kwargs["pattern"] == "react"
 
     @pytest.mark.asyncio
     async def test_reconstruct_agent_from_history_no_data(self, agent_manager, mock_db):

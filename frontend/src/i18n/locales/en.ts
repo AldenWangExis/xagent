@@ -275,6 +275,11 @@ Build when you need.`
         visual: { title: "Vision Model", description: "Understands and processes images" },
         compact: { title: "Long Context Model", description: "Handles long contexts and compression" },
         embedding: { title: "Embedding Model", description: "Generates vector embeddings" },
+        image: { title: "Image Generation Model", description: "Used for image generation tasks" },
+        image_edit: { title: "Image Edit Model", description: "Used for image editing and refinement" },
+        asr: { title: "Speech Recognition Model", description: "Used for speech-to-text tasks" },
+        tts: { title: "Text-to-Speech Model", description: "Used for text-to-speech tasks" },
+        speech: { title: "Speech Model", description: "Supports both recognition and synthesis" },
       },
       actions: {
         clearDefault: "Clear Default",
@@ -1062,6 +1067,7 @@ Build when you need.`
     previewDialog: {
       buttons: {
         download: "Download",
+        open: "Open",
         openInNewWindow: "Open in New Window",
       },
       loading: "Loading file content...",
@@ -2939,7 +2945,15 @@ Build when you need.`
       columns: {
         appId: "APP ID",
         provider: "PROVIDER",
-        transport: "TRANSPORT"
+        transport: "TRANSPORT",
+        connectorVisibility: "CONNECTOR VISIBILITY"
+      },
+      visibility: {
+        visible: "Visible",
+        hidden: "Hidden",
+        showSuccess: "App is now visible in the connector dialog",
+        hideSuccess: "App is now hidden from the connector dialog",
+        updateFailed: "Failed to update connector visibility"
       },
       form: {
         appId: "App ID (e.g. gmail)",
@@ -2948,6 +2962,8 @@ Build when you need.`
         iconUrl: "Icon URL",
         category: "Category",
         transport: "Transport",
+        visibleInConnector: "Show in connector dialog",
+        visibleInConnectorDescription: "When disabled, this public app is completely hidden from the connector dialog for all users.",
         oauthScopes: "OAuth Scopes (comma separated)",
         launchConfig: "Launch Config (JSON)",
         invalidJson: "Invalid JSON in launch_config"

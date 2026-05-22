@@ -46,6 +46,8 @@ class DetectObjectsResult(BaseModel):
     confidence_threshold: float = 0.5
     prompt_sent: Optional[str] = None
     marked_image_path: Optional[str] = None
+    file_id: Optional[str] = None
+    file_ref: Optional[Dict[str, Any]] = None
     box_color: Optional[str] = None
     raw_response: Optional[str] = None
     parsing_method: Optional[str] = None
@@ -71,6 +73,43 @@ class VisionCore:
             Path(output_directory) if output_directory else Path("./output")
         )
         self.output_directory.mkdir(parents=True, exist_ok=True)
+
+    def _coerce_optional_float(self, value: Any, field_name: str) -> Optional[float]:
+        """Normalize optional numeric tool arguments before model calls."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name} must be a number")
+        if isinstance(value, str):
+            value = value.strip()
+            if value.lower() in {"", "none", "null"}:
+                return None
+
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be a number") from exc
+
+    def _coerce_optional_int(self, value: Any, field_name: str) -> Optional[int]:
+        """Normalize optional integer tool arguments before model calls."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name} must be an integer")
+        if isinstance(value, str):
+            value = value.strip()
+            if value.lower() in {"", "none", "null"}:
+                return None
+
+        try:
+            parsed_float = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be an integer") from exc
+
+        if not parsed_float.is_integer():
+            raise ValueError(f"{field_name} must be an integer")
+
+        return int(parsed_float)
 
     def _convert_image_to_base64(self, image_path: str) -> str:
         """
@@ -167,6 +206,9 @@ class VisionCore:
             Dictionary with analysis result and metadata
         """
         try:
+            temperature = self._coerce_optional_float(temperature, "temperature")
+            max_tokens = self._coerce_optional_int(max_tokens, "max_tokens")
+
             # Validate vision model capability
             if not self.vision_model.has_ability("vision"):
                 model_info = f"Model: {self.vision_model.__class__.__name__}"
@@ -311,6 +353,9 @@ class VisionCore:
             Result with detected objects and optionally marked image path
         """
         try:
+            temperature = self._coerce_optional_float(temperature, "temperature")
+            max_tokens = self._coerce_optional_int(max_tokens, "max_tokens")
+
             # Validate vision model capability
             if not self.vision_model.has_ability("vision"):
                 model_info = f"Model: {self.vision_model.__class__.__name__}"
@@ -406,8 +451,8 @@ class VisionCore:
             # Call the vision model
             raw_result = await self.vision_model.vision_chat(
                 messages=messages,
-                temperature=temperature or 0.1,
-                max_tokens=max_tokens or 2000,
+                temperature=temperature if temperature is not None else 0.1,
+                max_tokens=max_tokens if max_tokens is not None else 2000,
                 response_format={"type": "json_object"},
             )
 

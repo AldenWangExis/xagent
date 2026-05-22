@@ -156,6 +156,8 @@ class WebToolConfig(BaseToolConfig):
         # Ensure base_dir is in workspace_config (required by ToolFactory._create_workspace)
         if "base_dir" not in workspace_config:
             workspace_config["base_dir"] = workspace_base_dir
+        if self._user_id is not None and "user_id" not in workspace_config:
+            workspace_config["user_id"] = self._user_id
         self._workspace_config = workspace_config
         self._explicit_vision_model = vision_model
         self._explicit_llm = llm
@@ -343,6 +345,12 @@ class WebToolConfig(BaseToolConfig):
             logger.exception("Failed to get user tool overrides")
             self._cached_tool_overrides = {}
         return self._cached_tool_overrides
+
+    def refresh_user_tool_overrides(self) -> dict:
+        """Reload per-user tool overrides from the registered hook."""
+        # The policy can change while an AgentService instance is reused.
+        self._cached_tool_overrides = None
+        return self.get_user_tool_overrides()
 
     def get_excluded_agent_id(self) -> Optional[int]:
         """Get agent ID to exclude from agent tools (to prevent self-calls)."""

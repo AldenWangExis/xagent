@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -22,6 +22,7 @@ import { useI18n } from '@/contexts/i18n-context';
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { normalizeTimestampMs } from '@/lib/time-utils';
+import { InlineFilePreview } from '@/components/file/inline-file-preview';
 
 // Types
 interface ToolArgs {
@@ -36,6 +37,16 @@ interface ToolResult {
   output?: string;
   error?: string;
   message?: string;
+  artifacts?: ToolArtifact[];
+}
+
+interface ToolArtifact {
+  type?: string;
+  file_id?: string;
+  filename?: string;
+  mime_type?: string;
+  preview_url?: string;
+  display?: string;
 }
 
 interface TraceEvent {
@@ -82,16 +93,17 @@ interface StepAction {
   title: string;
   status: 'running' | 'completed' | 'failed';
   timestamp: number;
-  data: {
-    model?: string;
-    tool?: string;
-    args?: any;
-    code?: string;
-    output?: any;
-    reasoning?: string;
-    error?: any;
-    tool_calls?: any;
-    sandboxed?: boolean;
+    data: {
+      model?: string;
+      tool?: string;
+      args?: any;
+      code?: string;
+      output?: any;
+      artifacts?: ToolArtifact[];
+      reasoning?: string;
+      error?: any;
+      tool_calls?: any;
+      sandboxed?: boolean;
   };
 }
 
@@ -331,11 +343,20 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
         }
 
         step.output = output;
+        const artifacts =
+          typeof result === 'object' &&
+          result !== null &&
+          Array.isArray(result.artifacts)
+            ? result.artifacts
+            : undefined;
 
         const action = findLastRunningAction(step, 'tool');
         if (action) {
           action.status = 'completed';
           action.data.output = output;
+          if (artifacts) {
+            action.data.artifacts = artifacts;
+          }
         } else {
           // Fallback
           step.actions.push({
@@ -344,7 +365,11 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
             title: t('traceEventRenderer.toolExecutionFinished'),
             status: 'completed',
             timestamp,
-            data: { output, sandboxed: !!event.data?.sandboxed }
+            data: {
+              output,
+              artifacts,
+              sandboxed: !!event.data?.sandboxed
+            }
           });
         }
       }
@@ -464,8 +489,37 @@ const CopyButton = ({ text, title }: { text: string, title?: string }) => {
   );
 };
 
+const ToolArtifactsDisplay = ({ artifacts, onFileClick, t }: { artifacts?: ToolArtifact[]; onFileClick?: (filePath: string, fileName: string) => void; t: (key: string) => string }) => {
+  const displayArtifacts = (artifacts || []).filter(
+    artifact => artifact && (artifact.preview_url || artifact.file_id) && (artifact.display === undefined || artifact.display === 'inline')
+  );
+
+  if (displayArtifacts.length === 0) return null;
+
+  return (
+    <div className="mt-4 grid gap-3">
+      {displayArtifacts.map((artifact, index) => (
+        <InlineFilePreview
+          key={`${artifact.file_id || artifact.preview_url || index}`}
+          source={{
+            fileId: artifact.file_id,
+            previewUrl: artifact.preview_url,
+            filename: artifact.filename,
+            mimeType: artifact.mime_type,
+            type: artifact.type,
+          }}
+          openLabel={t('files.previewDialog.buttons.open')}
+          loadErrorText={t('files.previewDialog.errors.loadFailed')}
+          onFileClick={onFileClick}
+        />
+      ))}
+    </div>
+  );
+};
+
 const ToolOutputDisplay = ({ action, isRunning, t, onFileClick, onAgentClick }: { action: StepAction, isRunning: boolean, t: any, onFileClick?: (filePath: string, fileName: string) => void, onAgentClick?: (agentId: string, agentName: string) => void }) => (
   <>
+    <ToolArtifactsDisplay artifacts={action.data.artifacts} onFileClick={onFileClick} t={t} />
     {action.data.output !== undefined && action.data.output !== '' && (
       <div className="mt-4 flex flex-col gap-1.5">
         <div className="text-xs text-muted-foreground px-1 flex justify-between items-center">

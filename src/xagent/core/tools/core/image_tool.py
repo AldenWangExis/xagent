@@ -16,6 +16,7 @@ from urllib import parse
 
 import aiohttp
 
+from ...file_ref import build_workspace_file_ref
 from ...model.image.base import BaseImageModel
 from ...workspace import TaskWorkspace
 
@@ -151,6 +152,33 @@ Images are automatically saved to workspace.
         self._default_generate_model = default_generate_model
         self._default_edit_model = default_edit_model
         self._generate_model_info_text()
+
+    def _build_image_artifacts(
+        self, image_path: Optional[str], file_id: Optional[str]
+    ) -> list[dict[str, str]]:
+        """Build display-safe image artifact metadata for a registered image."""
+        if not file_id:
+            return []
+
+        filename = Path(image_path).name if image_path else "generated_image.png"
+        mime_type = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }.get(Path(filename).suffix.lower(), "image/png")
+
+        return [
+            {
+                "type": "image",
+                "file_id": file_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "display": "inline",
+            }
+        ]
 
     def _generate_model_info_text(self) -> None:
         """Generate formatted text with available models and descriptions."""
@@ -510,13 +538,24 @@ Images are automatically saved to workspace.
             image_url = result.get("image_url")
             image_path = None
             image_file_id: Optional[str] = None
+            file_ref: Optional[dict[str, Any]] = None
 
             # Download image to workspace if workspace is available
             if image_url and self._workspace:
                 try:
                     with self._workspace.auto_register_files():
                         image_path = await self._download_image(image_url)
-                        if image_path:
+                    if image_path:
+                        try:
+                            file_ref = build_workspace_file_ref(
+                                workspace=self._workspace,
+                                file_path=image_path,
+                            )
+                            image_file_id = file_ref["file_id"]
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to build generated image FileRef: %s", e
+                            )
                             image_file_id = self._workspace.get_file_id_from_path(
                                 image_path
                             )
@@ -526,16 +565,19 @@ Images are automatically saved to workspace.
             elif image_url and not self._workspace:
                 logger.warning("No workspace available, image not saved locally")
 
-            return {
+            response = {
                 "success": True,
                 "image_path": image_path,
                 "file_id": image_file_id,
+                "artifacts": self._build_image_artifacts(image_path, image_file_id),
+                "file_ref": file_ref,
                 "usage": result.get("usage", {}),
                 "task_metric": result.get("task_metric", {}),
                 "request_id": result.get("request_id"),
                 "model_used": actual_model_id,
                 "saved_to_workspace": image_path is not None,
             }
+            return response
 
         except Exception as e:
             logger.error(f"Image generation failed: {e}")
@@ -632,6 +674,7 @@ Images are automatically saved to workspace.
             edited_image_url = result.get("image_url")
             image_path = None
             image_file_id: Optional[str] = None
+            file_ref: Optional[dict[str, Any]] = None
 
             # Download image to workspace if workspace is available
             if edited_image_url and self._workspace:
@@ -642,7 +685,17 @@ Images are automatically saved to workspace.
                         image_path = await self._download_image(
                             edited_image_url, filename
                         )
-                        if image_path:
+                    if image_path:
+                        try:
+                            file_ref = build_workspace_file_ref(
+                                workspace=self._workspace,
+                                file_path=image_path,
+                            )
+                            image_file_id = file_ref["file_id"]
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to build edited image FileRef: %s", e
+                            )
                             image_file_id = self._workspace.get_file_id_from_path(
                                 image_path
                             )
@@ -656,6 +709,8 @@ Images are automatically saved to workspace.
                 "success": True,
                 "image_path": image_path,
                 "file_id": image_file_id,
+                "artifacts": self._build_image_artifacts(image_path, image_file_id),
+                "file_ref": file_ref,
                 "usage": result.get("usage", {}),
                 "task_metric": result.get("task_metric", {}),
                 "request_id": result.get("request_id"),

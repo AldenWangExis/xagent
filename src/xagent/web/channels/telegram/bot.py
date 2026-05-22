@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import logging
 import os
@@ -12,14 +13,24 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
+from aiogram.types import FSInputFile
 from sqlalchemy.orm import Session
 
 from ...api.chat import get_agent_manager
 from ...models.database import get_db
 from ...models.task import Task, TaskStatus
+from ...models.uploaded_file import UploadedFile
 from ...models.user import User
+from ...services.chat_history_service import persist_user_message
+from ...services.execution_result_projection import project_execution_result_for_channel
 from .handler import TelegramTraceHandler
-from .utils import markdown_to_tg_html
+from .utils import (
+    TelegramImageRef,
+    markdown_to_tg_html,
+    persist_telegram_assistant_turn,
+    restore_telegram_task_context,
+    strip_telegram_image_refs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +109,7 @@ class TelegramBotInstance:
                 f"Received /start from {message.from_user.id} on bot {self.instance_id}"
             )
             await message.answer(
-                "Hello! I am Xagent Telegram Bot. You can send /new to start a new task."
+                "Hi, I'm Xagent. Send me anything you'd like help with, or use /new when you want a fresh start."
             )
 
         @self.dp.message(Command("new"))
@@ -109,7 +120,7 @@ class TelegramBotInstance:
             self.active_tasks[message.from_user.id] = -1
             self._save_active_tasks()
             await message.answer(
-                "Started a new session. Your next message will create a new task."
+                "Fresh start. Send me what you'd like to work on next."
             )
 
         @self.dp.message()
@@ -178,7 +189,7 @@ class TelegramBotInstance:
         import mimetypes
         from pathlib import Path
 
-        from ...models.uploaded_file import UploadedFile
+        from ...services.uploaded_file_store import UploadedFileStore
 
         uploaded_files_info: list[dict] = []
 
@@ -231,15 +242,14 @@ class TelegramBotInstance:
 
                 file_size = getattr(f, "file_size", target_path.stat().st_size)
 
-                file_record = UploadedFile(
+                file_record = UploadedFileStore(db).create_from_local_path(
+                    local_path=target_path,
                     user_id=user_id,
                     task_id=task_id,
                     filename=normalized_file_name,
-                    storage_path=str(target_path),
                     mime_type=mime_type,
-                    file_size=file_size,
                 )
-                db.add(file_record)
+                setattr(file_record, "file_size", int(file_size))
                 db.flush()
 
                 agent_service.workspace.register_file(
@@ -335,7 +345,6 @@ class TelegramBotInstance:
                     )
 
                 is_new_task = False
-                was_completed_or_failed = False
                 if not task:
                     task_title = text if text else "Untitled Task"
                     if len(task_title) > 50:
@@ -356,10 +365,6 @@ class TelegramBotInstance:
                     self._save_active_tasks()
                     is_new_task = True
                 else:
-                    was_completed_or_failed = task.status in [
-                        TaskStatus.COMPLETED,
-                        TaskStatus.FAILED,
-                    ]
                     task.status = TaskStatus.PENDING
                     db.commit()
 
@@ -370,19 +375,7 @@ class TelegramBotInstance:
                     user=user,  # type: ignore
                 )
 
-                from ...services.task_execution_context_service import (
-                    load_task_execution_recovery_state,
-                )
-
-                recovery_state = await load_task_execution_recovery_state(
-                    db, int(task.id)
-                )  # type: ignore
-                agent_service.set_execution_context_messages(
-                    recovery_state.get("messages", [])
-                )
-                agent_service.set_recovered_skill_context(
-                    recovery_state.get("skill_context")
-                )
+                await restore_telegram_task_context(agent_service, db, int(task.id))
 
                 context: dict = {}
 
@@ -415,8 +408,16 @@ class TelegramBotInstance:
                         context["state"] = context.get("state", {})
                         context["state"]["file_info"] = uploaded_info
 
+                persist_user_message(
+                    db=db,
+                    task_id=int(task.id),  # type: ignore
+                    user_id=int(user.id),  # type: ignore
+                    content=text,
+                )
+
                 loading_msg = await last_message.answer(
-                    f"⏳ <b>Task #{task.id} is processing...</b>\n<i>Please wait for the result.</i>",
+                    "Got it, I'm working on this now.\n"
+                    "<i>I'll update this message as I make progress.</i>",
                     parse_mode=ParseMode.HTML,
                 )
 
@@ -430,57 +431,39 @@ class TelegramBotInstance:
 
                 from ...user_isolated_memory import UserContext
 
-                force_fresh_execution = not is_new_task and was_completed_or_failed
-                actual_task_id = None if force_fresh_execution else str(task.id)
+                actual_task_id = str(task.id)
 
-                with UserContext(int(user.id)):  # type: ignore
-                    result = await agent_manager.execute_task(
-                        agent_service=agent_service,
-                        task=text,
-                        context=context,
-                        task_id=actual_task_id,
-                        tracking_task_id=str(task.id),
-                        db_session=db,
-                    )
+                try:
+                    with UserContext(int(user.id)):  # type: ignore
+                        result = await agent_manager.execute_task(
+                            agent_service=agent_service,
+                            task=text,
+                            context=context,
+                            task_id=actual_task_id,
+                            tracking_task_id=str(task.id),
+                            db_session=db,
+                        )
+                finally:
+                    if tg_handler in agent_service.tracer.handlers:
+                        agent_service.tracer.handlers.remove(tg_handler)
 
-                task.status = (
-                    TaskStatus.COMPLETED
-                    if result.get("success", False)
-                    else TaskStatus.FAILED
-                )
+                projection = project_execution_result_for_channel(result)
+                task.status = projection.task_status
                 db.commit()
 
-                output = result.get("output", "")
+                persist_telegram_assistant_turn(
+                    db=db,
+                    task_id=int(task.id),  # type: ignore
+                    user_id=int(user.id),  # type: ignore
+                    content=projection.transcript_content,
+                    interactions=projection.interactions,
+                    message_type=projection.message_type,
+                )
 
-                chat_response = result.get("chat_response")
-                if isinstance(chat_response, dict):
-                    interactions = chat_response.get("interactions", [])
-                    if interactions:
-                        interaction_texts = []
-                        for interaction in interactions:
-                            label = interaction.get("label") or interaction.get(
-                                "field", "Input"
-                            )
-                            options = interaction.get("options", [])
-                            if options:
-                                opts = []
-                                for opt in options:
-                                    if isinstance(opt, dict):
-                                        opts.append(
-                                            str(opt.get("label", opt.get("value", "")))
-                                        )
-                                    else:
-                                        opts.append(str(opt))
-                                interaction_texts.append(
-                                    f"• {label}\n  Options: {', '.join(opts)}"
-                                )
-                            else:
-                                interaction_texts.append(f"• {label}")
-                        if interaction_texts:
-                            output += "\n\n" + "\n".join(interaction_texts)
-
-                if not output or not str(output).strip():
-                    output = "Task completed, but no output was generated."
+                output = projection.visible_text
+                output, image_refs = strip_telegram_image_refs(output)
+                if not output and image_refs:
+                    output = "Task completed."
 
                 max_len = 4000
                 text_chunks = [
@@ -505,6 +488,20 @@ class TelegramBotInstance:
                     except Exception:
                         await last_message.answer(chunk)
 
+                if image_refs:
+                    failed_image_refs = await self._send_output_images(
+                        image_refs=image_refs,
+                        user_id=int(user.id),  # type: ignore
+                        task_id=int(task.id),  # type: ignore
+                        db=db,
+                        reply_to=last_message,
+                    )
+                    if failed_image_refs:
+                        await self._send_image_fallback_message(
+                            image_refs=failed_image_refs,
+                            reply_to=last_message,
+                        )
+
             finally:
                 try:
                     next(db_gen)
@@ -515,6 +512,100 @@ class TelegramBotInstance:
             await last_message.answer(
                 "Sorry, an error occurred while processing your request."
             )
+
+    async def _send_output_images(
+        self,
+        *,
+        image_refs: list[TelegramImageRef],
+        user_id: int,
+        task_id: int,
+        db: Session,
+        reply_to: types.Message,
+    ) -> list[TelegramImageRef]:
+        ordered_file_ids = list(dict.fromkeys(ref.file_id for ref in image_refs))
+        failed_refs: list[TelegramImageRef] = []
+
+        file_records = (
+            db.query(UploadedFile)
+            .filter(
+                UploadedFile.file_id.in_(ordered_file_ids),
+                UploadedFile.user_id == user_id,
+                UploadedFile.task_id == task_id,
+            )
+            .all()
+            if ordered_file_ids
+            else []
+        )
+        file_record_by_id = {str(record.file_id): record for record in file_records}
+
+        sent_file_ids: set[str] = set()
+        for image_ref in image_refs:
+            if image_ref.file_id in sent_file_ids:
+                continue
+            sent_file_ids.add(image_ref.file_id)
+
+            file_record = file_record_by_id.get(image_ref.file_id)
+            if not file_record:
+                logger.warning(
+                    "Telegram output image not found: file_id=%s task_id=%s",
+                    image_ref.file_id,
+                    task_id,
+                )
+                failed_refs.append(image_ref)
+                continue
+
+            mime_type = file_record.mime_type or ""
+            if not mime_type.startswith("image/"):
+                logger.warning(
+                    "Telegram output file is not an image: file_id=%s mime_type=%s",
+                    image_ref.file_id,
+                    mime_type,
+                )
+                failed_refs.append(image_ref)
+                continue
+
+            image_path = Path(file_record.storage_path)
+            if not image_path.is_file():
+                logger.warning(
+                    "Telegram output image path missing: file_id=%s path=%s",
+                    image_ref.file_id,
+                    image_path,
+                )
+                failed_refs.append(image_ref)
+                continue
+
+            caption = (
+                html.escape(image_ref.alt_text[:512]) if image_ref.alt_text else None
+            )
+            try:
+                await reply_to.answer_photo(
+                    FSInputFile(image_path), caption=caption or None
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to send Telegram output image: file_id=%s error=%s",
+                    image_ref.file_id,
+                    e,
+                )
+                failed_refs.append(image_ref)
+
+        return failed_refs
+
+    async def _send_image_fallback_message(
+        self, *, image_refs: list[TelegramImageRef], reply_to: types.Message
+    ) -> None:
+        subject = "image" if len(image_refs) == 1 else "images"
+        lines = [
+            f"I couldn't send the {subject} through Telegram, but the file reference is still available:"
+        ]
+        for image_ref in image_refs:
+            label = image_ref.alt_text or "image"
+            lines.append(f"- {label}: file:{image_ref.file_id}")
+        text = "\n".join(lines)
+        try:
+            await reply_to.answer(markdown_to_tg_html(text), parse_mode=ParseMode.HTML)
+        except Exception:
+            await reply_to.answer(text)
 
     async def start(self) -> None:
         try:

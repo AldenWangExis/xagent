@@ -5,6 +5,13 @@ Skill Selector - Use LLM to select the most appropriate skill
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from xagent.core.agent.trace import (
+    TraceCategory,
+    trace_action_end,
+    trace_llm_call_start,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +77,21 @@ If no skill is directly relevant, return selected: false."""
         """
         self.llm = llm
 
-    async def select(self, task: str, candidates: List[Dict]) -> Optional[Dict]:
+    async def select(
+        self,
+        task: str,
+        candidates: List[Dict],
+        tracer: Any = None,
+        task_id: Optional[str] = None,
+    ) -> Optional[Dict]:
         """
         Select the most appropriate skill, or return None
 
         Args:
             task: User task
             candidates: List of candidate skills
+            tracer: Optional Tracer for audit trace coverage
+            task_id: Real task id to attribute audit events to
 
         Returns:
             Selected skill, or None
@@ -89,25 +104,167 @@ If no skill is directly relevant, return selected: false."""
         logger.info(f"Available candidates: {len(candidates)} skills")
 
         prompt = self._build_prompt(task, candidates)
+        messages = [
+            {"role": "system", "content": self.SELECTOR_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
 
         logger.info("Calling LLM for skill selection...")
+
+        # Audit trace setup — virtual step_id outside dag_step_*/react_step_*.
+        # SkillManager.select_skill already emits trace_skill_select_start/end
+        # at the process level; this captures the LLM messages/response.
+        audit_task_id = task_id or f"dag_skill_selection_{uuid4().hex[:8]}"
+        audit_step_id = "dag_skill_selection"
+        audit_model_name = getattr(self.llm, "model_name", type(self.llm).__name__)
+        fallback_failure_emitted = False
+        used_attempt = 1
+        used_json_mode_failed = False
+
+        def _build_audit_data(
+            *,
+            action: str,
+            attempt: int,
+            json_mode_failed: bool,
+            include_input: bool = False,
+            response_type: Optional[str] = None,
+            response: Any = None,
+            response_usage: Any = None,
+            error: Optional[str] = None,
+            error_type: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            data: Dict[str, Any] = {
+                "action": action,
+                "model_name": audit_model_name,
+                "__audit_only__": True,
+                "task_type": "dag_skill_selection",
+                "attempt": attempt,
+                "json_mode_failed": json_mode_failed,
+                "is_tool_call": False,
+                "has_tools": False,
+                "step_id": audit_step_id,
+                "step_name": "skill_selection",
+            }
+            if include_input:
+                data["messages_count"] = len(messages)
+                data["messages"] = messages
+                data["candidates_count"] = len(candidates)
+                data["candidate_names"] = [c.get("name") for c in candidates]
+            if response_type is not None:
+                data["response_type"] = response_type
+                data["response"] = response
+                data["usage"] = response_usage
+            if error is not None:
+                data["error"] = error
+                data["error_type"] = error_type
+                data["llm_type"] = type(self.llm).__name__
+            return data
+
+        if tracer is not None:
+            await trace_llm_call_start(
+                tracer,
+                audit_task_id,
+                audit_step_id,
+                data=_build_audit_data(
+                    action="LLM call started",
+                    attempt=1,
+                    json_mode_failed=False,
+                    include_input=True,
+                ),
+            )
 
         # First try JSON mode, fall back to normal mode if not supported
         try:
             response = await self.llm.chat(
-                messages=[
-                    {"role": "system", "content": self.SELECTOR_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=messages,
                 response_format={"type": "json_object"},
             )
         except Exception as e:
             logger.warning(f"JSON mode not supported, falling back to normal mode: {e}")
-            response = await self.llm.chat(
-                messages=[
-                    {"role": "system", "content": self.SELECTOR_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ]
+            # Close attempt=1 with an error end so start/end remain paired.
+            # ``json_mode_failed=True`` on the attempt=1 close marks this
+            # event as the JSON-mode failure record; SQL queries can count
+            # ``attempt=1 AND action='LLM call failed' AND json_mode_failed=true``
+            # to get the JSON-mode-fallback rate.
+            if tracer is not None:
+                await trace_action_end(
+                    tracer,
+                    audit_task_id,
+                    audit_step_id,
+                    TraceCategory.LLM,
+                    data=_build_audit_data(
+                        action="LLM call failed",
+                        attempt=1,
+                        json_mode_failed=True,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    ),
+                )
+
+            if tracer is not None:
+                await trace_llm_call_start(
+                    tracer,
+                    audit_task_id,
+                    audit_step_id,
+                    data=_build_audit_data(
+                        action="LLM call started",
+                        attempt=2,
+                        json_mode_failed=True,
+                        include_input=True,
+                    ),
+                )
+            try:
+                response = await self.llm.chat(messages=messages)
+                used_attempt = 2
+                used_json_mode_failed = True
+            except Exception as fallback_err:
+                # Close attempt=2 with an error end so start/end stay paired,
+                # then re-raise to let SkillManager's outer trace_error fire.
+                if tracer is not None:
+                    try:
+                        await trace_action_end(
+                            tracer,
+                            audit_task_id,
+                            audit_step_id,
+                            TraceCategory.LLM,
+                            data=_build_audit_data(
+                                action="LLM call failed",
+                                attempt=2,
+                                json_mode_failed=True,
+                                error=str(fallback_err),
+                                error_type=type(fallback_err).__name__,
+                            ),
+                        )
+                        fallback_failure_emitted = True
+                    except Exception as trace_err:
+                        logger.warning(
+                            f"Failed to emit error trace for skill selection fallback: {trace_err}"
+                        )
+                raise
+
+        if tracer is not None and not fallback_failure_emitted:
+            if isinstance(response, str):
+                response_content: Any = response
+                response_usage: Any = None
+            elif isinstance(response, dict):
+                response_content = response.get("content", str(response))
+                response_usage = response.get("usage")
+            else:
+                response_content = str(response)
+                response_usage = None
+            await trace_action_end(
+                tracer,
+                audit_task_id,
+                audit_step_id,
+                TraceCategory.LLM,
+                data=_build_audit_data(
+                    action="LLM call completed",
+                    attempt=used_attempt,
+                    json_mode_failed=used_json_mode_failed,
+                    response_type=type(response).__name__,
+                    response=response_content,
+                    response_usage=response_usage,
+                ),
             )
 
         # Handle different return types
