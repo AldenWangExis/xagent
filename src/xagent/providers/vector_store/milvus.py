@@ -376,12 +376,19 @@ class MilvusVectorStore(VectorStore):
                 metadata = {}
             if not self._matches_filters(metadata, filters):
                 continue
-            rows.append(
-                {
-                    "id": str(item_id) if item_id is not None else "",
-                    "metadata": metadata,
-                }
-            )
+            row = {
+                "id": str(item_id) if item_id is not None else "",
+                "metadata": metadata,
+            }
+            for field in fields:
+                if field in row:
+                    continue
+                if isinstance(entity, dict) and field in entity:
+                    row[field] = entity[field]
+                    continue
+                if field in item:
+                    row[field] = item[field]
+            rows.append(row)
         return rows
 
     def list_collections(self) -> List[str]:

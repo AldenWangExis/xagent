@@ -85,7 +85,6 @@ class _FakeMilvusVectorStore:
         output_fields: List[str] | None = None,
         limit: int = 20000,
     ) -> List[Dict[str, Any]]:
-        del output_fields
         if limit <= 0:
             return []
         results: List[Dict[str, Any]] = []
@@ -106,7 +105,10 @@ class _FakeMilvusVectorStore:
                         break
                 if not matched:
                     continue
-            results.append({"id": item_id, "metadata": metadata})
+            result = {"id": item_id, "metadata": metadata}
+            if output_fields and "vector" in output_fields:
+                result["vector"] = row.get("vector", [])
+            results.append(result)
             if len(results) >= limit:
                 break
         return results
@@ -397,6 +399,75 @@ def test_iter_batches_works_when_local_cache_is_empty(store: Any) -> None:
     assert len(batches) == 1
     rows = batches[0].to_pylist()
     assert rows == [{"collection": "kb1", "doc_id": "d1"}]
+
+
+def test_rename_collection_embeddings_works_when_local_cache_is_empty(
+    store: Any,
+) -> None:
+    store.upsert_embeddings(
+        "text-embedding-v4",
+        [_record(collection="old-kb", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2])],
+    )
+    store._records.clear()
+
+    renamed = store.rename_collection_embeddings(
+        collection_name="old-kb",
+        new_name="new-kb",
+        user_id=1,
+        is_admin=False,
+    )
+
+    assert renamed == {"embeddings_text_embedding_v4": 1}
+    assert (
+        store.count_rows(
+            "embeddings_text_embedding_v4",
+            filters={"collection": "old-kb"},
+            user_id=1,
+            is_admin=False,
+        )
+        == 0
+    )
+    assert (
+        store.count_rows(
+            "embeddings_text_embedding_v4",
+            filters={"collection": "new-kb"},
+            user_id=1,
+            is_admin=False,
+        )
+        == 1
+    )
+
+
+def test_rename_collection_embeddings_survives_metadata_only_cache_refresh(
+    store: Any,
+) -> None:
+    store.upsert_embeddings(
+        "text-embedding-v4",
+        [_record(collection="old-kb", doc_id="d1", chunk_id="c1", vector=[0.1, 0.2])],
+    )
+    store._records.clear()
+    assert store.count_embeddings_by_collection(user_id=1, is_admin=False) == {
+        "old-kb": 1
+    }
+
+    renamed = store.rename_collection_embeddings(
+        collection_name="old-kb",
+        new_name="new-kb",
+        user_id=1,
+        is_admin=False,
+    )
+
+    assert renamed == {"embeddings_text_embedding_v4": 1}
+    results = store.search_vectors_by_model(
+        "text-embedding-v4",
+        [0.1, 0.2],
+        top_k=10,
+        filters=FilterCondition("collection", FilterOperator.EQ, "new-kb"),
+        user_id=1,
+        is_admin=False,
+    )
+    assert len(results) == 1
+    assert results[0]["collection"] == "new-kb"
 
 
 def test_mixed_vector_dimensions_rejected(store: Any) -> None:

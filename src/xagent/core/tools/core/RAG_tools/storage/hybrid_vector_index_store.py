@@ -307,12 +307,21 @@ class HybridVectorIndexStore(VectorIndexStore):
         self,
         collection_name: str,
         new_name: str,
+        user_id: Optional[int],
+        is_admin: bool,
     ) -> list[str]:
-        warnings = self._lancedb.rename_collection_data(collection_name, new_name)
+        warnings = self._lancedb.rename_collection_data(
+            collection_name,
+            new_name,
+            user_id,
+            is_admin,
+        )
         try:
             self._milvus.rename_collection_embeddings(
                 collection_name=collection_name,
                 new_name=new_name,
+                user_id=user_id,
+                is_admin=is_admin,
             )
         except Exception as exc:  # noqa: BLE001
             message = (

@@ -279,18 +279,28 @@ class MilvusEmbeddingIndexStore:
         table_name: str,
         *,
         filters: Optional[dict[str, Any]] = None,
+        output_fields: Optional[list[str]] = None,
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> tuple[str, MilvusVectorStore, list[tuple[str, dict[str, Any]]]]:
         model_tag = self._extract_model_tag_from_table(table_name)
         resolved_table_name, store = self._ensure_store(model_tag)
+        fields = output_fields or ["id", "metadata"]
 
         query_rows_fn = getattr(store, "query_rows", None)
         if callable(query_rows_fn):
-            raw_rows = query_rows_fn(filters=filters, output_fields=["id", "metadata"])
+            raw_rows = query_rows_fn(filters=filters, output_fields=fields)
         else:
             raw_rows = [
-                {"id": item_id, "metadata": row}
+                {
+                    "id": item_id,
+                    "metadata": row,
+                    **(
+                        {"vector": row["vector"]}
+                        if "vector" in fields and "vector" in row
+                        else {}
+                    ),
+                }
                 for item_id, row in self._records.get(resolved_table_name, {}).items()
             ]
 
@@ -308,6 +318,11 @@ class MilvusEmbeddingIndexStore:
                 continue
             if not self._passes_access_control(row, user_id=user_id, is_admin=is_admin):
                 continue
+            for field in fields:
+                if field in {"id", "metadata"}:
+                    continue
+                if field in item:
+                    row[field] = item[field]
             matched_rows.append((item_id, row))
             # Keep a best-effort cache for fallback paths without making
             # correctness depend on process-local state.
@@ -657,30 +672,40 @@ class MilvusEmbeddingIndexStore:
         *,
         collection_name: str,
         new_name: str,
+        user_id: Optional[int] = None,
+        is_admin: bool = True,
     ) -> dict[str, int]:
         if not collection_name or collection_name == new_name:
             return {}
 
         renamed_counts: dict[str, int] = {}
-        for table_name, records in list(self._records.items()):
-            matching_rows: list[dict[str, Any]] = []
+        for table_name in self.list_table_names():
+            resolved_table_name, store, matched_rows = self._query_rows_for_table(
+                table_name,
+                filters={"collection": collection_name},
+                output_fields=["id", "metadata", "vector"],
+                user_id=user_id,
+                is_admin=is_admin,
+            )
             old_ids: list[str] = []
-            for item_id, row in list(records.items()):
-                if row.get("collection") != collection_name:
-                    continue
+            updated_rows: list[dict[str, Any]] = []
+            for item_id, row in matched_rows:
                 updated_row = dict(row)
                 updated_row["collection"] = new_name
-                matching_rows.append(updated_row)
                 old_ids.append(item_id)
-                records.pop(item_id, None)
+                updated_rows.append(updated_row)
 
             if not old_ids:
                 continue
-            self._stores[table_name].delete_vectors(old_ids)
-            for row in matching_rows:
-                model_tag = str(row.get("model", ""))
-                self.upsert_embeddings(model_tag, [row])
-            renamed_counts[table_name] = len(old_ids)
+            model_tag = self._extract_model_tag_from_table(resolved_table_name)
+            self._vector_dim_for_records(updated_rows)
+            self.upsert_embeddings(model_tag, updated_rows)
+            store.delete_vectors(old_ids)
+            records = self._records.get(resolved_table_name)
+            if records is not None:
+                for item_id in old_ids:
+                    records.pop(item_id, None)
+            renamed_counts[resolved_table_name] = len(old_ids)
 
         return renamed_counts
 

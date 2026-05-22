@@ -242,13 +242,22 @@ def test_rename_collection_data_updates_milvus_and_lancedb() -> None:
         milvus_embedding_store=milvus_store,
     )
 
-    warnings = hybrid.rename_collection_data("old-kb", "new-kb")
+    warnings = hybrid.rename_collection_data(
+        "old-kb", "new-kb", user_id=3, is_admin=False
+    )
 
     assert warnings == []
-    lancedb_store.rename_collection_data.assert_called_once_with("old-kb", "new-kb")
+    lancedb_store.rename_collection_data.assert_called_once_with(
+        "old-kb",
+        "new-kb",
+        3,
+        False,
+    )
     milvus_store.rename_collection_embeddings.assert_called_once_with(
         collection_name="old-kb",
         new_name="new-kb",
+        user_id=3,
+        is_admin=False,
     )
 
 
