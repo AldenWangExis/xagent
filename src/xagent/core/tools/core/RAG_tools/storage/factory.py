@@ -270,6 +270,12 @@ def reset_rag_storage_for_tests() -> None:
         pass
     reset_kb_write_coordinator()
 
+    # Clear semantic coordinator state without introducing a storage -> kb
+    # import cycle at module import time.
+    from xagent.core.tools.core.RAG_tools.kb import reset_kb_coordinator_for_tests
+
+    reset_kb_coordinator_for_tests()
+
     # Clear global collection locks to prevent test-to-test lock contamination
     from xagent.core.tools.core.RAG_tools.management import collection_manager
 
