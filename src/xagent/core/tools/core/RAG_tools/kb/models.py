@@ -26,8 +26,6 @@ class KBStorageBackend(StrEnum):
     """Collection-level KB storage backend binding."""
 
     LANCEDB = "lancedb"
-    MILVUS = "milvus"
-    QDRANT = "qdrant"
 
 
 @dataclass(frozen=True)

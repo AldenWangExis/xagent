@@ -7,6 +7,8 @@ isolation. They must not depend on API, pipeline, search, or lifecycle migration
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
@@ -314,6 +316,25 @@ async def test_get_context_resolves_string_kb_storage_binding() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_context_rejects_invalid_kb_storage_backend_string() -> None:
+    """Given an unknown kb_storage backend, get_context fails explicitly."""
+    from xagent.core.tools.core.RAG_tools.kb import (
+        KBContextRequest,
+        get_kb_coordinator,
+    )
+
+    metadata_store = StorageFactory.get_factory().get_metadata_store()
+    await metadata_store.save_collection(
+        CollectionInfo(name="broken_backend", extra_metadata={"kb_storage": "postgres"})
+    )
+
+    with pytest.raises(ValueError, match="postgres"):
+        await get_kb_coordinator().get_context(
+            KBContextRequest(collection="broken_backend")
+        )
+
+
+@pytest.mark.asyncio
 async def test_get_context_rejects_invalid_kb_storage_binding_shape() -> None:
     """Given invalid kb_storage shape, get_context fails explicitly."""
     from xagent.core.tools.core.RAG_tools.kb import (
@@ -330,6 +351,36 @@ async def test_get_context_rejects_invalid_kb_storage_binding_shape() -> None:
         await get_kb_coordinator().get_context(KBContextRequest(collection="broken"))
 
 
+@pytest.mark.asyncio
+async def test_get_context_normalizes_string_access_mode() -> None:
+    """Given a string access mode, get_context normalizes it to the enum."""
+    from xagent.core.tools.core.RAG_tools.kb import (
+        KBAccessMode,
+        KBContextRequest,
+        get_kb_coordinator,
+    )
+
+    context = await get_kb_coordinator().get_context(
+        KBContextRequest(collection="docs", access_mode="WRITE", hide_missing=True)
+    )
+
+    assert context.access_mode is KBAccessMode.WRITE
+
+
+@pytest.mark.asyncio
+async def test_get_context_rejects_invalid_access_mode() -> None:
+    """Given an unsupported access mode, get_context fails explicitly."""
+    from xagent.core.tools.core.RAG_tools.kb import (
+        KBContextRequest,
+        get_kb_coordinator,
+    )
+
+    with pytest.raises(ValueError, match="Invalid KB access mode"):
+        await get_kb_coordinator().get_context(
+            KBContextRequest(collection="docs", access_mode="delete", hide_missing=True)
+        )
+
+
 def test_open_collection_rejects_unsupported_backend() -> None:
     """Given an unsupported backend, the handle provider raises a clear error."""
     from xagent.core.tools.core.RAG_tools.kb import (
@@ -341,6 +392,9 @@ def test_open_collection_rejects_unsupported_backend() -> None:
         KBUserScope,
     )
 
+    class UnsupportedBackend:
+        value = "future"
+
     factory = StorageFactory.get_factory()
     context = KBCollectionContext(
         collection="future",
@@ -350,12 +404,12 @@ def test_open_collection_rejects_unsupported_backend() -> None:
         hide_missing=False,
         metadata_store=factory.get_metadata_store(),
         vector_index_store=factory.get_vector_index_store(),
-        backend=KBStorageBackend.MILVUS,
+        backend=cast(KBStorageBackend, UnsupportedBackend()),
         capabilities=KBBackendCapabilities.unsupported(),
         collection_info=None,
     )
 
-    with pytest.raises(ValueError, match="milvus"):
+    with pytest.raises(ValueError, match="future"):
         KBHandleProvider().open(context)
 
 
@@ -425,6 +479,21 @@ def test_open_collection_sync_returns_lancedb_handle() -> None:
     assert isinstance(handle, LanceDBCollectionHandle)
 
 
+@pytest.mark.asyncio
+async def test_get_context_sync_resolves_inside_running_event_loop() -> None:
+    """Given async caller context, sync wrapper resolves via a worker event loop."""
+    from xagent.core.tools.core.RAG_tools.kb import (
+        KBContextRequest,
+        get_kb_coordinator,
+    )
+
+    context = get_kb_coordinator().get_context_sync(
+        KBContextRequest(collection="docs", hide_missing=True)
+    )
+
+    assert context.collection == "docs"
+
+
 def test_reset_rag_storage_for_tests_resets_kb_coordinator_state() -> None:
     """Given storage reset, KB coordinator state is reset as part of test isolation."""
     from xagent.core.tools.core.RAG_tools.kb import get_kb_coordinator
@@ -432,6 +501,18 @@ def test_reset_rag_storage_for_tests_resets_kb_coordinator_state() -> None:
     first = get_kb_coordinator()
 
     reset_rag_storage_for_tests()
+    second = get_kb_coordinator()
+
+    assert second is not first
+
+
+def test_storage_factory_reset_all_resets_kb_coordinator_state() -> None:
+    """Given factory reset, semantic KB coordinator state is also reset."""
+    from xagent.core.tools.core.RAG_tools.kb import get_kb_coordinator
+
+    first = get_kb_coordinator()
+
+    StorageFactory.get_factory().reset_all()
     second = get_kb_coordinator()
 
     assert second is not first
