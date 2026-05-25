@@ -187,7 +187,7 @@ def _run_in_separate_loop(awaitable: Coroutine[Any, Any, T]) -> T:
         except BaseException as exc:  # noqa: BLE001 - propagate from worker thread
             error = exc
 
-    thread = threading.Thread(target=target)
+    thread = threading.Thread(target=target, daemon=True)
     thread.start()
     thread.join()
 
