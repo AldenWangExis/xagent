@@ -19,6 +19,35 @@ from xagent.core.tools.core.RAG_tools.storage.factory import (
 from xagent.core.tools.core.RAG_tools.utils.user_scope import user_scope_context
 
 
+class _FakeMetadataStore:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def get_collection(self, collection: str) -> CollectionInfo:
+        self.calls += 1
+        raise self.error
+
+
+class _FakeStorageFactory:
+    def __init__(self, metadata_store: _FakeMetadataStore) -> None:
+        self.metadata_store = metadata_store
+
+    def get_metadata_store(self) -> _FakeMetadataStore:
+        return self.metadata_store
+
+    def get_vector_index_store(self) -> object:
+        return object()
+
+
+class _StorageAccessSentinel:
+    def get_metadata_store(self) -> object:
+        raise AssertionError("metadata store should not be requested")
+
+    def get_vector_index_store(self) -> object:
+        raise AssertionError("vector index store should not be requested")
+
+
 def test_kb_public_surface_imports() -> None:
     """Given the new semantic package, all #495 public symbols are importable."""
     import xagent.core.tools.core.RAG_tools.kb as kb
@@ -218,6 +247,38 @@ async def test_get_context_raises_for_missing_collection_by_default() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_context_propagates_unexpected_metadata_runtime_error() -> None:
+    """Given storage failure, hide_missing must not return a fallback context."""
+    from xagent.core.tools.core.RAG_tools.kb import KBContextRequest, KBCoordinator
+
+    metadata_store = _FakeMetadataStore(RuntimeError("db offline"))
+    factory = _FakeStorageFactory(metadata_store)
+
+    with pytest.raises(RuntimeError, match="db offline"):
+        await KBCoordinator(storage_factory=cast(StorageFactory, factory)).get_context(
+            KBContextRequest(collection="docs", hide_missing=True)
+        )
+
+    assert metadata_store.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_context_propagates_non_missing_metadata_value_error() -> None:
+    """Given corrupt metadata, ValueError must not be treated as collection missing."""
+    from xagent.core.tools.core.RAG_tools.kb import KBContextRequest, KBCoordinator
+
+    metadata_store = _FakeMetadataStore(ValueError("invalid metadata json"))
+    factory = _FakeStorageFactory(metadata_store)
+
+    with pytest.raises(ValueError, match="invalid metadata json"):
+        await KBCoordinator(storage_factory=cast(StorageFactory, factory)).get_context(
+            KBContextRequest(collection="docs", hide_missing=True)
+        )
+
+    assert metadata_store.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_get_context_defaults_legacy_collection_without_kb_storage_to_lancedb() -> (
     None
 ):
@@ -381,6 +442,21 @@ async def test_get_context_rejects_invalid_access_mode() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_get_context_rejects_invalid_access_mode_before_storage_access() -> None:
+    """Given invalid request shape, get_context fails before touching storage."""
+    from xagent.core.tools.core.RAG_tools.kb import KBContextRequest, KBCoordinator
+
+    coordinator = KBCoordinator(
+        storage_factory=cast(StorageFactory, _StorageAccessSentinel())
+    )
+
+    with pytest.raises(ValueError, match="Invalid KB access mode"):
+        await coordinator.get_context(
+            KBContextRequest(collection="docs", access_mode="delete", hide_missing=True)
+        )
+
+
 def test_open_collection_rejects_unsupported_backend() -> None:
     """Given an unsupported backend, the handle provider raises a clear error."""
     from xagent.core.tools.core.RAG_tools.kb import (
@@ -492,6 +568,25 @@ async def test_get_context_sync_resolves_inside_running_event_loop() -> None:
     )
 
     assert context.collection == "docs"
+
+
+@pytest.mark.asyncio
+async def test_get_context_sync_preserves_user_scope_inside_running_event_loop() -> (
+    None
+):
+    """Given async caller scope, sync wrapper preserves request ContextVars."""
+    from xagent.core.tools.core.RAG_tools.kb import (
+        KBContextRequest,
+        get_kb_coordinator,
+    )
+
+    with user_scope_context(user_id=789, is_admin=True):
+        context = get_kb_coordinator().get_context_sync(
+            KBContextRequest(collection="docs", hide_missing=True)
+        )
+
+    assert context.user_scope.user_id == 789
+    assert context.user_scope.is_admin is True
 
 
 def test_reset_rag_storage_for_tests_resets_kb_coordinator_state() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Coroutine
+from contextvars import copy_context
 from typing import Any, Optional, TypeVar
 
 from ..storage.factory import StorageFactory
@@ -38,6 +39,7 @@ class KBCoordinator:
     async def get_context(self, request: KBContextRequest) -> KBCollectionContext:
         """Resolve collection, caller scope, stores, backend, and capabilities."""
         collection = self._normalize_collection(request.collection)
+        access_mode = self._normalize_access_mode(request.access_mode)
         user_scope = self._resolve_user_scope(request)
         metadata_store = self._storage_factory.get_metadata_store()
         vector_index_store = self._storage_factory.get_vector_index_store()
@@ -45,7 +47,9 @@ class KBCoordinator:
         collection_info = None
         try:
             collection_info = await metadata_store.get_collection(collection)
-        except Exception as exc:  # noqa: BLE001 - missing table/row compatibility
+        except ValueError as exc:
+            if not self._is_missing_collection_error(collection, exc):
+                raise
             if not (request.hide_missing or request.allow_create):
                 raise ValueError(f"Collection '{collection}' not found") from exc
 
@@ -55,7 +59,7 @@ class KBCoordinator:
         return KBCollectionContext(
             collection=collection,
             user_scope=user_scope,
-            access_mode=self._normalize_access_mode(request.access_mode),
+            access_mode=access_mode,
             allow_create=bool(request.allow_create),
             hide_missing=bool(request.hide_missing),
             metadata_store=metadata_store,
@@ -100,6 +104,14 @@ class KBCoordinator:
             raise ValueError(
                 f"Invalid KB access mode {access_mode!r}; choose one of: {allowed}"
             ) from exc
+
+    @staticmethod
+    def _is_missing_collection_error(collection: str, exc: ValueError) -> bool:
+        message = str(exc)
+        return message in {
+            f"Collection '{collection}' not found",
+            "Table 'collection_metadata' was not found",
+        }
 
     @staticmethod
     def _resolve_user_scope(request: KBContextRequest) -> KBUserScope:
@@ -179,11 +191,12 @@ def _run_in_separate_loop(awaitable: Coroutine[Any, Any, T]) -> T:
 
     result: Optional[T] = None
     error: Optional[BaseException] = None
+    context = copy_context()
 
     def target() -> None:
         nonlocal result, error
         try:
-            result = asyncio.run(awaitable)
+            result = context.run(lambda: asyncio.run(awaitable))
         except BaseException as exc:  # noqa: BLE001 - propagate from worker thread
             error = exc
 
